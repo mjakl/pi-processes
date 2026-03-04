@@ -21,7 +21,7 @@ pi install git:github.com/aliou/pi-processes
 ## Features
 
 - **Tool**: `process` with actions: `start`, `list`, `output`, `logs`, `kill`, `clear`
-- **Commands**: `/ps` (interactive panel), `/ps:focus` (focus on process), `/ps:logs` (focus + expand), `/ps:kill` (kill process), `/ps:clear` (clear finished), `/ps:dock` (toggle dock)
+- **Commands**: `/ps` (interactive panel), `/ps:pin` (pin dock to process), `/ps:logs` (open log overlay), `/ps:kill` (kill process), `/ps:clear` (clear finished), `/ps:dock` (control dock visibility), `/ps:settings`
 - **Log Dock**: Unified view for all process logs with color-coded prefixes
 - **Follow Mode**: Automatically shows dock when processes start (enabled by default)
 - **Focus Mode**: Filter to a single process's logs
@@ -65,15 +65,15 @@ View and manage all processes in an interactive panel:
 - `c` - clear finished processes
 - `q` - quit
 
-#### `/ps:focus [id|name]` - Focus on a process
+#### `/ps:pin [id|name]` - Pin dock to a process
 
-Focus on a specific process to view its logs in the dock. Opens the dock automatically if hidden.
+Pin the dock to a specific process. Opens the dock automatically if hidden.
 
 Without arguments, shows a picker to select a process.
 
-#### `/ps:logs [id|name]` - Show log paths
+#### `/ps:logs [id|name]` - Open log overlay
 
-Display the stdout and stderr log file paths for a process.
+Open the interactive log viewer overlay (search, scroll, stream filter).
 
 #### `/ps:kill [id|name]` - Kill a process
 
@@ -83,12 +83,12 @@ Kill a running process. Without arguments, shows a picker.
 
 Remove all finished processes from the list.
 
-#### `/ps:dock [on|off|expanded]` - Toggle dock
+#### `/ps:dock [show|hide|toggle]` - Control dock
 
-Control dock visibility. Without arguments, toggles between hidden/open. With arguments:
-- `on` - Show dock (open)
-- `off` - Hide dock
-- `expanded` - Show dock open (same as on)
+Control dock visibility. Without arguments, it toggles state. With arguments:
+- `show` - Show dock (open)
+- `hide` - Hide dock
+- `toggle` - Cycle dock visibility state
 
 ### Log Dock
 
@@ -108,8 +108,7 @@ The log dock shows interleaved logs from all processes with color-coded prefixes
 - `f` - toggle focus mode (filter to single process)
 - `x` - kill focused process
 - `q` - close/unfocus dock
-- `Shift+F` - toggle follow mode
-- `Ctrl+Shift+P` - toggle dock visibility (global)
+- Follow mode toggle is only available via settings (`/ps:settings`)
 
 **Dock States:**
 - `collapsed` (1-2 lines): Summary + last log line
@@ -119,7 +118,7 @@ The log dock shows interleaved logs from all processes with color-coded prefixes
 
 The following commands are deprecated but still work with a warning:
 - `/process:list` → Use `/ps` instead
-- `/process:stream` → Use `/ps:focus` instead
+- `/process:stream` → Use `/ps:pin` instead
 - `/process:logs` → Use `/ps:logs` instead
 - `/process:kill` → Use `/ps:kill` instead
 - `/process:clear` → Use `/ps:clear` instead

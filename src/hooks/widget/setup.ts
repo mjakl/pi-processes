@@ -120,10 +120,6 @@ export function setupProcessWidget(
       else dockState.visibility = "collapsed";
       updateWidget();
     },
-    toggleFollow() {
-      dockState.followEnabled = !dockState.followEnabled;
-      updateWidget();
-    },
   };
 
   manager.onEvent((event) => {

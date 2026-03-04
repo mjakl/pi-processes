@@ -14,7 +14,6 @@ export interface DockActions {
   collapse(): void;
   hide(): void;
   toggle(): void;
-  toggleFollow(): void;
 }
 
 export const STATUS_WIDGET_ID = "processes-status";

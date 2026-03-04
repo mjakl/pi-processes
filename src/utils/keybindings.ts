@@ -15,8 +15,6 @@ export interface ProcessesKeybindings {
   nextProcess: string;
   /** Toggle focus mode */
   toggleFocus: string;
-  /** Toggle follow mode */
-  toggleFollow: string;
   /** Kill focused process */
   killProcess: string;
   /** Clear finished processes */
@@ -32,7 +30,6 @@ export const DEFAULT_KEYBINDINGS: ProcessesKeybindings = {
   prevProcess: "h",
   nextProcess: "l",
   toggleFocus: "f",
-  toggleFollow: "Shift+F",
   killProcess: "x",
   clearFinished: "c",
   closeDock: "q",
@@ -48,7 +45,6 @@ export interface ProcessesConfigKeybindings {
   prevProcess?: string;
   nextProcess?: string;
   toggleFocus?: string;
-  toggleFollow?: string;
   killProcess?: string;
   clearFinished?: string;
   closeDock?: string;
@@ -68,7 +64,6 @@ export function loadKeybindings(config: {
     prevProcess: user.prevProcess ?? DEFAULT_KEYBINDINGS.prevProcess,
     nextProcess: user.nextProcess ?? DEFAULT_KEYBINDINGS.nextProcess,
     toggleFocus: user.toggleFocus ?? DEFAULT_KEYBINDINGS.toggleFocus,
-    toggleFollow: user.toggleFollow ?? DEFAULT_KEYBINDINGS.toggleFollow,
     killProcess: user.killProcess ?? DEFAULT_KEYBINDINGS.killProcess,
     clearFinished: user.clearFinished ?? DEFAULT_KEYBINDINGS.clearFinished,
     closeDock: user.closeDock ?? DEFAULT_KEYBINDINGS.closeDock,
