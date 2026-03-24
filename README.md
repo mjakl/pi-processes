@@ -14,7 +14,7 @@ pi install git:https://github.com/mjakl/pi-processes
 
 ## What this fork keeps
 
-- the `process` tool for starting, listing, inspecting, killing, clearing, and writing to managed processes
+- the `process` tool for starting, listing, inspecting, killing, and clearing managed processes
 - a single `/ps` overlay for monitoring processes
 - a tiny always-visible process status line while managed processes exist, showing active/finished counts
 - process completion notifications in the conversation
@@ -37,7 +37,6 @@ process start "pnpm test --watch" name="tests"
 process list
 process output id="backend"
 process logs id="proc_1"
-process write id="proc_1" input="rs\n"
 process kill id="backend"
 process clear
 ```

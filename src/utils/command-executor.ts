@@ -50,7 +50,7 @@ export function spawnCommand(
   return spawn(shellExecutable, ["-lc", command], {
     cwd,
     env: process.env,
-    stdio: ["pipe", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "pipe"],
     detached: true,
   });
 }

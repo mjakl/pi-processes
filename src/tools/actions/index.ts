@@ -7,15 +7,12 @@ import { executeList } from "./list";
 import { executeLogs } from "./logs";
 import { executeOutput } from "./output";
 import { executeStart } from "./start";
-import { executeWrite } from "./write";
 
 interface ActionParams {
   action: string;
   command?: string;
   name?: string;
   id?: string;
-  input?: string;
-  end?: boolean;
   alertOnSuccess?: boolean;
   alertOnFailure?: boolean;
   alertOnKill?: boolean;
@@ -39,8 +36,6 @@ export async function executeAction(
       return executeKill(params, manager);
     case "clear":
       return executeClear(manager);
-    case "write":
-      return executeWrite(params, manager);
     default:
       return {
         content: [{ type: "text", text: `Unknown action: ${params.action}` }],
