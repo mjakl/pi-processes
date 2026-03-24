@@ -1,6 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { setupProcessesCommands } from "./commands";
-import { registerProcessesSettings } from "./commands/settings";
 import { configLoader } from "./config";
 import { setupProcessesHooks } from "./hooks";
 import { ProcessManager } from "./manager";
@@ -20,16 +19,7 @@ export default async function (pi: ExtensionAPI) {
     getConfiguredShellPath: () => configLoader.getConfig().execution.shellPath,
   });
 
-  const config = configLoader.getConfig();
-
-  const { update: updateWidget, dockActions } = setupProcessesHooks(
-    pi,
-    manager,
-    config,
-  );
-  setupProcessesCommands(pi, manager, dockActions);
+  setupProcessesHooks(pi, manager, configLoader.getConfig());
+  setupProcessesCommands(pi, manager);
   setupProcessesTools(pi, manager);
-  registerProcessesSettings(pi, () => {
-    updateWidget();
-  });
 }

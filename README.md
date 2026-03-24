@@ -1,155 +1,74 @@
 # Processes Extension
 
-Manage background processes from Pi. Start long-running commands (dev servers, build watchers, log tailers) without blocking the conversation.
+> **Note**
+> This is a stripped down fork of https://github.com/aliou/pi-processes.
+> Most people should likely use the original project instead.
 
-## Demo
-
-<video src="https://assets.aliou.me/pi-extensions/2026-01-26-processes-demo.mp4" controls playsinline muted></video>
+Manage background processes from Pi without blocking the conversation.
 
 ## Installation
 
 ```bash
-pi install npm:@aliou/pi-processes
+pi install git:https://github.com/mjakl/pi-processes
 ```
 
-Or from git:
+## What this fork keeps
 
-```bash
-pi install git:github.com/aliou/pi-processes
-```
+- the `process` tool for starting, listing, inspecting, killing, clearing, and writing to managed processes
+- a single `/ps` overlay for monitoring processes
+- a tiny always-visible process status line while managed processes exist
+- process completion notifications in the conversation
+- file-backed logs so process output is preserved outside agent context
 
-## Features
+## What this fork removes
 
-- **Tool**: `process` with actions: `start`, `list`, `output`, `logs`, `kill`, `clear`
-- **Commands**: `/ps` (interactive panel), `/ps:pin` (pin dock to process), `/ps:logs` (open log overlay), `/ps:kill` (kill process), `/ps:clear` (clear finished), `/ps:dock` (control dock visibility), `/ps:settings`
-- **Log Dock**: Unified view for all process logs with color-coded prefixes
-- **Follow Mode**: Automatically shows dock when processes start (enabled by default)
-- **Focus Mode**: Filter to a single process's logs
-- Auto-cleanup on session exit
-- File-based logging (logs written to temp files, not memory)
-- Friendly process names (auto-inferred or custom)
+- all `/ps:*` subcommands
+- the log dock
+- the settings UI
+- extra widget state and dock controls
 
 ## Usage
 
-### Tool (for agent)
+### Agent tool
 
-```
+```text
 process start "pnpm dev" name="backend-dev"
-process start "pnpm build" name="build" alertOnSuccess=true
-process start "pnpm test" alertOnFailure=true
+process start "pnpm test --watch" name="tests"
 process list
 process output id="backend"
 process logs id="proc_1"
+process write id="proc_1" input="rs\n"
 process kill id="backend"
 process clear
 ```
 
-**Alert parameters** (for `start` action):
-- `alertOnSuccess` (default: false) - Get a turn to react when process completes successfully. Use for builds/tests where you need confirmation.
-- `alertOnFailure` (default: true) - Get a turn to react when process fails/crashes. Use to be alerted of unexpected failures.
-- `alertOnKill` (default: false) - Get a turn to react if killed by external signal. Note: killing via tool never triggers a turn.
+#### Alerts for `start`
 
-**Important:** You don't need to poll or wait for processes. Notifications arrive automatically based on your preferences. Start processes and continue with other work - you'll be informed if something requires attention.
+- `alertOnSuccess` (default: `false`) - get a turn when the process exits successfully
+- `alertOnFailure` (default: `true`) - get a turn when the process exits with an error
+- `alertOnKill` (default: `false`) - get a turn when the process is killed externally
 
-Note: User always sees process updates in the UI. The alert flags control whether the agent gets a turn to react (e.g. check results, fix code, restart).
+You do not need to poll after starting a process. Pi will notify the user automatically, and the agent only gets a turn when the alert flags request it.
 
-### Commands (interactive)
+### `/ps` overlay
 
-#### `/ps` - Open full panel
+`/ps` opens the process overlay.
 
-View and manage all processes in an interactive panel:
-- `j/k` - select process
-- `J/K` - scroll logs
-- `enter` - focus on selected process
-- `x` - kill selected process
+Inside the overlay:
+
+- `up/down` - move the highlighted process
+- `left/right` - scroll older/newer log output for the highlighted process
+- `home/end` - jump to the top or back to the live tail
+- `x` - terminate the highlighted process (`SIGKILL` if already stuck in terminate timeout)
 - `c` - clear finished processes
-- `q` - quit
+- `q` or `Esc` - close the overlay
 
-#### `/ps:pin [id|name]` - Pin dock to a process
+The right side always shows logs for the currently highlighted process.
+For convenience, `j/k`, `J/K`, and `g/G` still work as aliases.
 
-Pin the dock to a specific process. Opens the dock automatically if hidden.
+## Notes
 
-Without arguments, shows a picker to select a process.
-
-#### `/ps:logs [id|name]` - Open log overlay
-
-Open the interactive log viewer overlay (search, scroll, stream filter).
-
-#### `/ps:kill [id|name]` - Kill a process
-
-Kill a running process. Without arguments, shows a picker.
-
-#### `/ps:clear` - Clear finished
-
-Remove all finished processes from the list.
-
-#### `/ps:dock [show|hide|toggle]` - Control dock
-
-Control dock visibility. Without arguments, it toggles state. With arguments:
-- `show` - Show dock (open)
-- `hide` - Hide dock
-- `toggle` - Cycle dock visibility state
-
-### Log Dock
-
-The log dock shows interleaved logs from all processes with color-coded prefixes:
-
-```
-[dev]   GET /api/users 200 45ms    (cyan)
-[test]  Running auth.test.ts...    (yellow)
-[dev]   POST /api/auth 200 12ms
-[test]  ✓ login flow
-...
-```
-
-**Dock Keyboard Shortcuts** (when dock is open):
-- `h` - focus previous process
-- `l` - focus next process
-- `f` - toggle focus mode (filter to single process)
-- `x` - kill focused process
-- `q` - close/unfocus dock
-- Follow mode toggle is only available via settings (`/ps:settings`)
-
-**Dock States:**
-- `collapsed` (1-2 lines): Summary + last log line
-- `open` (8-12 lines): Full interleaved or focused logs
-
-### Deprecated Commands (backward compatible)
-
-The following commands are deprecated but still work with a warning:
-- `/process:list` → Use `/ps` instead
-- `/process:stream` → Use `/ps:pin` instead
-- `/process:logs` → Use `/ps:logs` instead
-- `/process:kill` → Use `/ps:kill` instead
-- `/process:clear` → Use `/ps:clear` instead
-
-## Settings
-
-Configure via `/ps:settings` or `~/.pi/agent/extensions/processes.json`:
-
-- **Widget**: Dock default state, dock height
-- **Follow Mode**: Enable by default, auto-hide on finish
-- **Process List**: Max visible processes, max preview lines
-- **Output Limits**: Default tail lines, max output lines
-- **Execution**: Shell path override
-- **Interception**: Block background commands
-
-## Test Scripts
-
-Test scripts in `src/test/` directory:
-
-```bash
-./src/test/test-output.sh          # Continuous output (80 chars/sec)
-./src/test/test-exit-success.sh 5  # Exits successfully after 5s
-./src/test/test-exit-failure.sh 5  # Exits with code 1 after 5s
-./src/test/test-exit-crash.sh 5    # Exits with code 137 after 5s
-```
-
-## Future Improvements
-
-- [ ] **Configurable keybindings UI**: Allow editing keybindings in settings panel
-- [ ] **Process filtering**: Filter by name/status in full panel
-- [ ] **Log search**: Search within logs (Ctrl+F in dock)
-- [ ] **Copy log path**: Keyboard shortcut to copy log file path
-- [ ] **Open in editor**: Keyboard shortcut to open logs in $EDITOR
-- [ ] **Sound notifications**: Play sound on process completion
+- Log files live in a temporary directory managed by the extension.
+- `process output` returns tailed output for agent consumption.
+- `process logs` returns file paths so the agent can inspect the full logs with the `read` tool.
+- Background processes are cleaned up when the session shuts down.

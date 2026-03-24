@@ -2,9 +2,9 @@
  * LogFileViewer - reads a single log file and renders a scrollable,
  * searchable window of lines.
  *
- * A plain helper class (not a Component). Consumed by LogDockComponent
- * (open mode) and LogOverlayComponent (tabbed overlay). Callers are
- * responsible for polling / invalidating when file content changes.
+ * A plain helper class (not a Component). Currently consumed by the
+ * `/ps` overlay. Callers are responsible for polling / invalidating when
+ * file content changes.
  */
 
 import { readFileSync } from "node:fs";
