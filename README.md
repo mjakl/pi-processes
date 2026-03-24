@@ -71,3 +71,4 @@ The right side always shows logs for the currently highlighted process.
 - `process output` returns tailed output for agent consumption.
 - `process logs` returns file paths so the agent can inspect the full logs with the `read` tool.
 - Background processes are cleaned up when the session shuts down.
+- A manual `/ps` QA prompt and checklist live in `test/prompts/ps-overlay-qa.md` and `test/QA.md`.
