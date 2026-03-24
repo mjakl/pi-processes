@@ -105,7 +105,7 @@ export class ProcessesComponent implements Component {
       return true;
     }
 
-    if (matchesKey(data, "down") || data === "j") {
+    if (matchesKey(data, "down")) {
       if (this.processes.length > 0) {
         this.selectedIndex = Math.min(
           this.selectedIndex + 1,
@@ -117,7 +117,7 @@ export class ProcessesComponent implements Component {
       return true;
     }
 
-    if (matchesKey(data, "up") || data === "k") {
+    if (matchesKey(data, "up")) {
       if (this.processes.length > 0) {
         this.selectedIndex = Math.max(this.selectedIndex - 1, 0);
         this.ensureSelectionVisible(this.getBodyRows());
@@ -147,25 +147,25 @@ export class ProcessesComponent implements Component {
       return true;
     }
 
-    if (matchesKey(data, "left") || data === "J") {
+    if (matchesKey(data, "left")) {
       viewer.scrollBy(5);
       this.tui.requestRender();
       return true;
     }
 
-    if (matchesKey(data, "right") || data === "K") {
+    if (matchesKey(data, "right")) {
       viewer.scrollBy(-5);
       this.tui.requestRender();
       return true;
     }
 
-    if (matchesKey(data, "home") || data === "g") {
+    if (data === "g") {
       viewer.scrollToTop();
       this.tui.requestRender();
       return true;
     }
 
-    if (matchesKey(data, "end") || data === "G") {
+    if (data === "G") {
       if (!viewer.isFollowing()) {
         viewer.toggleFollow();
       }
@@ -455,7 +455,7 @@ export class ProcessesComponent implements Component {
     const footer =
       `${dim("up/down")} select  ` +
       `${dim("left/right")} scroll  ` +
-      `${dim("home/end")} top/live  ` +
+      `${dim("g/G")} top/live  ` +
       `${dim("x")} kill  ` +
       `${dim("c")} clear  ` +
       `${dim("q")} quit`;

@@ -58,13 +58,12 @@ Inside the overlay:
 
 - `up/down` - move the highlighted process
 - `left/right` - scroll older/newer log output for the highlighted process
-- `home/end` - jump to the top or back to the live tail
+- `g/G` - jump to the top or back to the live tail
 - `x` - terminate the highlighted process (`SIGKILL` if already stuck in terminate timeout)
 - `c` - clear finished processes
 - `q` or `Esc` - close the overlay
 
 The right side always shows logs for the currently highlighted process.
-For convenience, `j/k`, `J/K`, and `g/G` still work as aliases.
 
 ## Notes
 

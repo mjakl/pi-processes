@@ -1,6 +1,6 @@
 ---
 id: hpoyqr
-status: open
+status: closed
 deps: []
 created: 2026-03-24T16:48:49Z
 priority: 1
