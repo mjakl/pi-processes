@@ -13,6 +13,7 @@ interface ActionParams {
   command?: string;
   name?: string;
   id?: string;
+  force?: boolean;
   alertOnSuccess?: boolean;
   alertOnFailure?: boolean;
   alertOnKill?: boolean;

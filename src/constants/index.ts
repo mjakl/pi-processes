@@ -5,6 +5,7 @@ export type {
   ProcessesDetails,
   ProcessInfo,
   ProcessStatus,
+  ResolveProcessResult,
   StartOptions,
 } from "./types";
 

@@ -15,7 +15,8 @@ Use `test/prompts/ps-overlay-qa.md` as the prompt to send to the agent when vali
 - `left/right` scrolls older/newer log output
 - `g` jumps to the top of the current log view
 - `G` returns to the live tail
-- `x` terminates the highlighted process
+- `x` sends terminate for the highlighted process
+- when a process is stuck, it changes to `needs kill`, and pressing `x` again force-kills it
 - `c` clears finished processes
 - `q` or `Esc` closes the overlay
 
@@ -23,3 +24,4 @@ Use `test/prompts/ps-overlay-qa.md` as the prompt to send to the agent when vali
 
 - The prompt uses the repo's existing shell scripts under `test/` so no extra fixture setup is required.
 - Background process start remains LLM-only; the user should not run shell commands manually.
+- The `process` tool now supports force-kill directly with `force=true`; the overlay mirrors that behavior with a second `x` on `needs kill`.

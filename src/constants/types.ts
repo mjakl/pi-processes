@@ -41,6 +41,10 @@ export type KillResult =
   | { ok: true; info: ProcessInfo }
   | { ok: false; info: ProcessInfo; reason: "not_found" | "timeout" | "error" };
 
+export type ResolveProcessResult =
+  | { ok: true; info: ProcessInfo }
+  | { ok: false; reason: "not_found" | "ambiguous"; matches?: ProcessInfo[] };
+
 export interface StartOptions {
   alertOnSuccess?: boolean;
   alertOnFailure?: boolean;
@@ -54,7 +58,7 @@ export interface ProcessesDetails {
   process?: ProcessInfo;
   processes?: ProcessInfo[];
   output?: { stdout: string[]; stderr: string[]; status: string };
-  logFiles?: { stdoutFile: string; stderrFile: string };
+  logFiles?: { stdoutFile: string; stderrFile: string; combinedFile: string };
   cleared?: number;
 }
 

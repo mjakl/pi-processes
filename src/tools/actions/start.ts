@@ -36,20 +36,36 @@ export function executeStart(
     };
   }
 
-  const proc = manager.start(params.name, params.command, ctx.cwd, {
-    alertOnSuccess: params.alertOnSuccess,
-    alertOnFailure: params.alertOnFailure,
-    alertOnKill: params.alertOnKill,
-  });
+  try {
+    const proc = manager.start(params.name, params.command, ctx.cwd, {
+      alertOnSuccess: params.alertOnSuccess,
+      alertOnFailure: params.alertOnFailure,
+      alertOnKill: params.alertOnKill,
+    });
 
-  const message = `Started "${proc.name}" (${proc.id}, PID: ${proc.pid})\nLogs: ${proc.stdoutFile}`;
-  return {
-    content: [{ type: "text", text: message }],
-    details: {
-      action: "start",
-      success: true,
-      message,
-      process: proc,
-    },
-  };
+    const message = `Started "${proc.name}" (${proc.id}, PID: ${proc.pid})\nLogs: ${proc.stdoutFile}`;
+    return {
+      content: [{ type: "text", text: message }],
+      details: {
+        action: "start",
+        success: true,
+        message,
+        process: proc,
+      },
+    };
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? `Failed to start process: ${error.message}`
+        : "Failed to start process";
+
+    return {
+      content: [{ type: "text", text: message }],
+      details: {
+        action: "start",
+        success: false,
+        message,
+      },
+    };
+  }
 }

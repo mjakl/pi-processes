@@ -20,8 +20,25 @@ export function executeLogs(
     };
   }
 
-  const proc = manager.find(params.id);
-  if (!proc) {
+  const resolved = manager.resolve(params.id);
+  if (!resolved.ok) {
+    if (resolved.reason === "ambiguous") {
+      const choices = (resolved.matches ?? [])
+        .map((match) => `${match.id} ("${match.name}")`)
+        .join(", ");
+      const message =
+        `Process name is ambiguous: ${params.id}. ` +
+        `Use an exact process ID instead. Matches: ${choices}`;
+      return {
+        content: [{ type: "text", text: message }],
+        details: {
+          action: "logs",
+          success: false,
+          message,
+        },
+      };
+    }
+
     const message = `Process not found: ${params.id}`;
     return {
       content: [{ type: "text", text: message }],
@@ -33,6 +50,7 @@ export function executeLogs(
     };
   }
 
+  const proc = resolved.info;
   const logFiles = manager.getLogFiles(proc.id);
   if (!logFiles) {
     const message = `Could not get log files for: ${proc.id}`;
@@ -46,7 +64,15 @@ export function executeLogs(
     };
   }
 
-  const message = `Log files for "${proc.name}" (${proc.id}):\n  stdout: ${logFiles.stdoutFile}\n  stderr: ${logFiles.stderrFile}\n\nUse the read tool to inspect these files.`;
+  const message = [
+    `Log files for "${proc.name}" (${proc.id}):`,
+    `  stdout: ${logFiles.stdoutFile}`,
+    `  stderr: ${logFiles.stderrFile}`,
+    `  combined: ${logFiles.combinedFile}`,
+    "",
+    "Use the read tool to inspect these files.",
+  ].join("\n");
+
   return {
     content: [{ type: "text", text: message }],
     details: {

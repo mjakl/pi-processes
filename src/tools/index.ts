@@ -18,7 +18,7 @@ const ProcessesParams = Type.Object({
     ["start", "list", "output", "logs", "kill", "clear"] as const,
     {
       description:
-        "Action: start (run command), list (show all), output (get recent output), logs (get log file paths), kill (terminate), clear (remove finished)",
+        "Action: start (run command), list (show all), output (get recent output), logs (get log file paths), kill (terminate or force-kill), clear (remove finished)",
     },
   ),
   command: Type.Optional(
@@ -33,7 +33,13 @@ const ProcessesParams = Type.Object({
   id: Type.Optional(
     Type.String({
       description:
-        "Process ID or name to match (required for output/kill/logs). Can be proc_N or friendly name.",
+        "Exact process ID or exact friendly name to match (required for output/kill/logs).",
+    }),
+  ),
+  force: Type.Optional(
+    Type.Boolean({
+      description:
+        "Force-kill the process with SIGKILL for kill action. Use after a normal terminate times out, or when you need an immediate hard stop.",
     }),
   ),
   alertOnSuccess: Type.Optional(
@@ -66,7 +72,8 @@ export function setupProcessesTools(pi: ExtensionAPI, manager: ProcessManager) {
 
 Actions: start, list, output, logs, kill, clear.
 - start requires 'name' and 'command'
-- output/logs/kill require 'id'
+- output/logs/kill require 'id' (exact process ID or exact friendly name)
+- kill supports optional 'force=true' for SIGKILL
 
 By default, the agent is notified when a process exits, fails, or is externally killed. Set alertOnSuccess/alertOnFailure/alertOnKill to false to suppress specific follow-ups. Tool-triggered kills never notify.
 
@@ -106,6 +113,10 @@ No polling needed: start the process and continue working.`,
         args.id
       ) {
         mainArg = args.id;
+      }
+
+      if (args.action === "kill" && args.force) {
+        optionArgs.push({ label: "force", value: "true" });
       }
 
       return new ToolCallHeader(
@@ -287,6 +298,7 @@ No polling needed: start the process and continue working.`,
               theme.fg("success", "Log files:"),
               `  stdout: ${theme.fg("accent", details.logFiles.stdoutFile)}`,
               `  stderr: ${theme.fg("accent", details.logFiles.stderrFile)}`,
+              `  combined: ${theme.fg("accent", details.logFiles.combinedFile)}`,
             ].join("\n"),
             0,
             0,

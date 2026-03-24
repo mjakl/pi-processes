@@ -37,11 +37,21 @@ pi install git:https://github.com/mjakl/pi-processes
 process start "pnpm dev" name="backend-dev"
 process start "pnpm test --watch" name="tests"
 process list
-process output id="backend"
+process output id="backend-dev"
 process logs id="proc_1"
-process kill id="backend"
+process kill id="backend-dev"
+process kill id="proc_1" force=true
 process clear
 ```
+
+#### Matching processes
+
+For `output`, `logs`, and `kill`, `id` must be either:
+
+- the exact process ID (`proc_1`)
+- the exact friendly process name (`backend-dev`)
+
+If multiple processes share the same name, use the process ID.
 
 #### Alerts for `start`
 
@@ -50,6 +60,17 @@ process clear
 - `alertOnKill` (default: `true`) - get a turn when the process is killed externally; set `false` to suppress it
 
 You do not need to poll after starting a process. By default the agent is notified on exit, failure, and external kill.
+
+#### Logs and output
+
+- `process output` returns tailed stdout/stderr for agent consumption.
+- `process logs` returns file paths for `stdout`, `stderr`, and a combined view for the `/ps` overlay.
+
+#### Killing processes
+
+- `process kill id="..."` sends `SIGTERM`
+- `process kill id="..." force=true` sends `SIGKILL`
+- tool-triggered kills never notify the agent
 
 ### `/ps` overlay
 
@@ -60,16 +81,38 @@ Inside the overlay:
 - `up/down` - move the highlighted process
 - `left/right` - scroll older/newer log output for the highlighted process
 - `g/G` - jump to the top or back to the live tail
-- `x` - terminate the highlighted process (`SIGKILL` if already stuck in terminate timeout)
+- `x` - terminate the highlighted process; press `x` again when it shows `needs kill` to force-kill it
 - `c` - clear finished processes
 - `q` or `Esc` - close the overlay
 
 The right side always shows logs for the currently highlighted process.
 
+## Configuration
+
+Global config lives in `~/.pi/agent/extensions/process.json`.
+
+```json
+{
+  "output": {
+    "defaultTailLines": 100,
+    "maxOutputLines": 200
+  },
+  "execution": {
+    "shellPath": "/absolute/path/to/bash"
+  },
+  "interception": {
+    "blockBackgroundCommands": false
+  }
+}
+```
+
+- `output.defaultTailLines` - default number of lines returned by `process output`
+- `output.maxOutputLines` - hard cap for `process output`
+- `execution.shellPath` - absolute shell path override used for process startup
+- `interception.blockBackgroundCommands` - block background shell commands (`&`, `nohup`, `disown`, `setsid`) and guide the agent to use the `process` tool instead
+
 ## Notes
 
 - Log files live in a temporary directory managed by the extension.
-- `process output` returns tailed output for agent consumption.
-- `process logs` returns file paths so the agent can inspect the full logs with the `read` tool.
 - Background processes are cleaned up when the session shuts down.
 - A manual `/ps` QA prompt and checklist live in `test/prompts/ps-overlay-qa.md` and `test/QA.md`.

@@ -1,5 +1,5 @@
 import { configLoader } from "../../config";
-import type { ExecuteResult } from "../../constants";
+import type { ExecuteResult, ResolveProcessResult } from "../../constants";
 import type { ProcessManager } from "../../manager";
 import { formatStatus, stripAnsi } from "../../utils";
 
@@ -7,6 +7,41 @@ const MAX_BYTES = 50 * 1024; // 50KB
 
 interface OutputParams {
   id?: string;
+}
+
+function resolveProcessResult(
+  result: ResolveProcessResult,
+  action: "output" | "logs",
+  id: string,
+): ExecuteResult | null {
+  if (result.ok) return null;
+
+  if (result.reason === "ambiguous") {
+    const choices = (result.matches ?? [])
+      .map((match) => `${match.id} ("${match.name}")`)
+      .join(", ");
+    const message =
+      `Process name is ambiguous: ${id}. ` +
+      `Use an exact process ID instead. Matches: ${choices}`;
+    return {
+      content: [{ type: "text", text: message }],
+      details: {
+        action,
+        success: false,
+        message,
+      },
+    };
+  }
+
+  const message = `Process not found: ${id}`;
+  return {
+    content: [{ type: "text", text: message }],
+    details: {
+      action,
+      success: false,
+      message,
+    },
+  };
 }
 
 export function executeOutput(
@@ -24,19 +59,12 @@ export function executeOutput(
     };
   }
 
-  const proc = manager.find(params.id);
-  if (!proc) {
-    const message = `Process not found: ${params.id}`;
-    return {
-      content: [{ type: "text", text: message }],
-      details: {
-        action: "output",
-        success: false,
-        message,
-      },
-    };
+  const resolved = manager.resolve(params.id);
+  if (!resolved.ok) {
+    return resolveProcessResult(resolved, "output", params.id) as ExecuteResult;
   }
 
+  const proc = resolved.info;
   const { defaultTailLines } = configLoader.getConfig().output;
   const output = manager.getOutput(proc.id, defaultTailLines);
   if (!output) {
@@ -90,7 +118,11 @@ export function executeOutput(
  */
 function truncateTail(
   text: string,
-  logFiles: { stdoutFile: string; stderrFile: string } | null,
+  logFiles: {
+    stdoutFile: string;
+    stderrFile: string;
+    combinedFile: string;
+  } | null,
   maxLines: number,
 ): string {
   const totalBytes = Buffer.byteLength(text, "utf-8");

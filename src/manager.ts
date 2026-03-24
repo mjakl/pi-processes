@@ -15,6 +15,7 @@ import {
   type ManagerEvent,
   type ProcessInfo,
   type ProcessStatus,
+  type ResolveProcessResult,
   type StartOptions,
 } from "./constants";
 import { isProcessGroupAlive, killProcessGroup } from "./utils";
@@ -56,6 +57,8 @@ export class ProcessManager {
   private transition(managed: ManagedProcess, next: ProcessStatus): void {
     if (managed.status === next) return;
     managed.status = next;
+
+    this.emit({ type: "processes_changed" });
 
     if (next === "exited" || next === "killed") {
       this.emit({ type: "process_ended", info: this.toProcessInfo(managed) });
@@ -245,20 +248,26 @@ export class ProcessManager {
     return managed ? this.toProcessInfo(managed) : null;
   }
 
-  find(query: string): ProcessInfo | null {
+  resolve(query: string): ResolveProcessResult {
     const byId = this.processes.get(query);
-    if (byId) return this.toProcessInfo(byId);
+    if (byId) {
+      return { ok: true, info: this.toProcessInfo(byId) };
+    }
 
     const queryLower = query.toLowerCase();
-    for (const managed of this.processes.values()) {
-      if (managed.name.toLowerCase().includes(queryLower)) {
-        return this.toProcessInfo(managed);
-      }
-      if (managed.command.toLowerCase().includes(queryLower)) {
-        return this.toProcessInfo(managed);
-      }
+    const matches = Array.from(this.processes.values())
+      .filter((managed) => managed.name.toLowerCase() === queryLower)
+      .map((managed) => this.toProcessInfo(managed));
+
+    if (matches.length === 1) {
+      return { ok: true, info: matches[0] };
     }
-    return null;
+
+    if (matches.length > 1) {
+      return { ok: false, reason: "ambiguous", matches };
+    }
+
+    return { ok: false, reason: "not_found" };
   }
 
   getOutput(
@@ -366,7 +375,9 @@ export class ProcessManager {
       managed.lastSignalSent = signal;
     } catch (error) {
       const err = error as NodeJS.ErrnoException;
-      if (err.code !== "EPERM") {
+      if (err.code === "ESRCH") {
+        managed.lastSignalSent = signal;
+      } else if (err.code !== "EPERM") {
         return {
           ok: false,
           info: this.toProcessInfo(managed),
@@ -427,7 +438,7 @@ export class ProcessManager {
     return cleared;
   }
 
-  shutdownKillAll(): void {
+  private shutdownKillAll(): void {
     for (const p of this.processes.values()) {
       if (!LIVE_STATUSES.has(p.status)) continue;
       try {
@@ -438,7 +449,7 @@ export class ProcessManager {
     }
   }
 
-  stopWatcher(): void {
+  private stopWatcher(): void {
     if (this.watcher) {
       clearInterval(this.watcher);
       this.watcher = null;
@@ -447,15 +458,7 @@ export class ProcessManager {
 
   cleanup(): void {
     this.stopWatcher();
-
-    for (const p of this.processes.values()) {
-      if (!LIVE_STATUSES.has(p.status)) continue;
-      try {
-        killProcessGroup(p.pid, "SIGKILL");
-      } catch {
-        // Ignore
-      }
-    }
+    this.shutdownKillAll();
 
     try {
       rmSync(this.logDir, { recursive: true, force: true });
