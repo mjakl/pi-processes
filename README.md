@@ -16,7 +16,7 @@ pi install git:https://github.com/mjakl/pi-processes
 
 - the `process` tool for starting, listing, inspecting, killing, clearing, and writing to managed processes
 - a single `/ps` overlay for monitoring processes
-- a tiny always-visible process status line while managed processes exist
+- a tiny always-visible process status line while managed processes exist, showing active/finished counts
 - process completion notifications in the conversation
 - file-backed logs so process output is preserved outside agent context
 
