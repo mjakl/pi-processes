@@ -39,3 +39,4 @@ result-*
 # Pi
 .pi/
 .agents/plans/*.md
+/.tickets/
