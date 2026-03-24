@@ -146,9 +146,9 @@ export class ProcessManager {
       stdoutFile,
       stderrFile,
       combinedFile,
-      alertOnSuccess: options?.alertOnSuccess ?? false,
+      alertOnSuccess: options?.alertOnSuccess ?? true,
       alertOnFailure: options?.alertOnFailure ?? true,
-      alertOnKill: options?.alertOnKill ?? false,
+      alertOnKill: options?.alertOnKill ?? true,
       lastSignalSent: null,
     };
 

@@ -39,19 +39,19 @@ const ProcessesParams = Type.Object({
   alertOnSuccess: Type.Optional(
     Type.Boolean({
       description:
-        "Get a turn to react when process completes successfully (default: false). Use for builds/tests where you need confirmation.",
+        "Notify the agent on successful exit (default: true). Set false to suppress.",
     }),
   ),
   alertOnFailure: Type.Optional(
     Type.Boolean({
       description:
-        "Get a turn to react when process fails/crashes (default: true). Use to be alerted of unexpected failures.",
+        "Notify the agent on failure (default: true). Set false to suppress.",
     }),
   ),
   alertOnKill: Type.Optional(
     Type.Boolean({
       description:
-        "Get a turn to react when process is killed by external signal (default: false). Note: killing via tool never triggers a turn.",
+        "Notify the agent on external kill (default: true). Set false to suppress. Tool-triggered kills never notify.",
     }),
   ),
 });
@@ -62,20 +62,15 @@ export function setupProcessesTools(pi: ExtensionAPI, manager: ProcessManager) {
   pi.registerTool<typeof ProcessesParams, ProcessesDetails>({
     name: "process",
     label: "Process",
-    description: `Manage background processes. Actions:
-- start: Run command in background (requires 'name' and 'command')
-  - alertOnSuccess (default: false): Get a turn to react when process completes successfully
-  - alertOnFailure (default: true): Get a turn to react when process crashes/fails
-  - alertOnKill (default: false): Get a turn to react if killed by external signal (killing via tool never triggers a turn)
-- list: Show all managed processes with their IDs and names
-- output: Get recent stdout/stderr (requires 'id' - can be proc_N or name match)
-- logs: Get log file paths to inspect with read tool (requires 'id')
-- kill: Terminate a process (requires 'id' - can be proc_N or name match like "backend")
-- clear: Remove all finished processes from the list
+    description: `Manage background processes.
 
-Important: You DON'T need to poll or wait for processes. Notifications arrive automatically based on your preferences. Start processes and continue with other work - you'll be informed if something requires attention.
+Actions: start, list, output, logs, kill, clear.
+- start requires 'name' and 'command'
+- output/logs/kill require 'id'
 
-Note: User always sees process updates in the UI. The notify flags control whether YOU (the agent) get a turn to react (e.g. check results, fix code, restart).`,
+By default, the agent is notified when a process exits, fails, or is externally killed. Set alertOnSuccess/alertOnFailure/alertOnKill to false to suppress specific follow-ups. Tool-triggered kills never notify.
+
+No polling needed: start the process and continue working.`,
 
     parameters: ProcessesParams,
 

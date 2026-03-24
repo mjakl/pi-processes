@@ -8,6 +8,8 @@ Manage background processes from Pi without blocking the conversation.
 
 ## Installation
 
+This fork is intended to be installed from git, not npm.
+
 ```bash
 pi install git:https://github.com/mjakl/pi-processes
 ```
@@ -43,11 +45,11 @@ process clear
 
 #### Alerts for `start`
 
-- `alertOnSuccess` (default: `false`) - get a turn when the process exits successfully
-- `alertOnFailure` (default: `true`) - get a turn when the process exits with an error
-- `alertOnKill` (default: `false`) - get a turn when the process is killed externally
+- `alertOnSuccess` (default: `true`) - get a turn when the process exits successfully; set `false` to suppress it
+- `alertOnFailure` (default: `true`) - get a turn when the process exits with an error; set `false` to suppress it
+- `alertOnKill` (default: `true`) - get a turn when the process is killed externally; set `false` to suppress it
 
-You do not need to poll after starting a process. Pi will notify the user automatically, and the agent only gets a turn when the alert flags request it.
+You do not need to poll after starting a process. By default the agent is notified on exit, failure, and external kill.
 
 ### `/ps` overlay
 
