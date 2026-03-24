@@ -228,7 +228,6 @@ export class ProcessesComponent implements Component {
         border(`${"─".repeat(rightDash)}╮`),
     );
 
-    lines.push(row(this.renderSummary(innerWidth)));
     lines.push(divider());
 
     const selected = this.currentProcess();
@@ -348,30 +347,6 @@ export class ProcessesComponent implements Component {
     );
   }
 
-  private renderSummary(width: number): string {
-    const dim = (text: string) => this.theme.fg("dim", text);
-    const accent = (text: string) => this.theme.fg("accent", text);
-    const running = this.processes.filter((process) =>
-      LIVE_STATUSES.has(process.status),
-    );
-    const finished = this.processes.length - running.length;
-    const selected = this.currentProcess();
-
-    const summary = [
-      `${accent(String(running.length))} running`,
-      `${dim(String(finished))} finished`,
-      `${this.processes.length} total`,
-    ].join(dim(" • "));
-
-    if (!selected) {
-      return this.padVisible(summary, width);
-    }
-
-    const selectedLabel = `${dim("selected:")} ${accent(selected.name)} ${dim(`(${selected.id})`)}`;
-    const combined = `${summary}${dim("  |  ")}${selectedLabel}`;
-    return this.padVisible(combined, width);
-  }
-
   private renderProcessRows(width: number, rows: number): string[] {
     const dim = (text: string) => this.theme.fg("dim", text);
     const accent = (text: string) => this.theme.fg("accent", text);
@@ -439,10 +414,10 @@ export class ProcessesComponent implements Component {
     const accent = (text: string) => this.theme.fg("accent", text);
 
     if (!selected || !viewer) {
-      return this.padVisible(dim("No process selected"), width);
+      return this.padVisible(dim("No processes"), width);
     }
 
-    const meta = `${accent(selected.name)} ${dim(`(${selected.id})`)} ${dim(statusLabel(selected))} ${dim(formatRuntime(selected.startTime, selected.endTime))}`;
+    const meta = `${accent(selected.name)}${dim(" • ")}${dim(statusLabel(selected))}${dim(" • ")}${dim(formatRuntime(selected.startTime, selected.endTime))}`;
     const viewerStatus = viewer.renderStatusBar(
       Math.max(16, width - visibleWidth(meta) - 3),
     );
@@ -458,7 +433,7 @@ export class ProcessesComponent implements Component {
       `${dim("g/G")} top/live  ` +
       `${dim("x")} kill  ` +
       `${dim("c")} clear  ` +
-      `${dim("q")} quit`;
+      `${dim("q")} close`;
     return this.padVisible(footer, width);
   }
 
