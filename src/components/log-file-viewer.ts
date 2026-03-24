@@ -125,7 +125,7 @@ export class LogFileViewer {
       const lines = this.applyFilter(this.readAllLines());
       this.anchorEnd = lines.length;
     }
-    this.anchorEnd = Math.max(0, this.anchorEnd + delta);
+    this.anchorEnd = Math.max(0, this.anchorEnd - delta);
     this.follow = false;
   }
 

@@ -368,10 +368,20 @@ export class ProcessesComponent implements Component {
       const color = statusTone(process);
       const icon = this.theme.fg(color, statusIcon(process));
       const prefix = selected ? accent(">") : dim(" ");
-      const nameWidth = Math.max(6, width - 14);
-      const name = truncateToWidth(process.name, nameWidth);
+      const processId = dim(process.id);
       const status = this.theme.fg(color, statusLabel(process));
-      const line = `${prefix} ${icon} ${selected ? accent(name) : name} ${dim(process.id)} ${status}`;
+      const reservedWidth =
+        visibleWidth(prefix) +
+        1 +
+        visibleWidth(icon) +
+        1 +
+        1 +
+        visibleWidth(processId) +
+        1 +
+        visibleWidth(status);
+      const nameWidth = Math.max(6, width - reservedWidth);
+      const name = truncateToWidth(process.name, nameWidth);
+      const line = `${prefix} ${icon} ${selected ? accent(name) : name} ${processId} ${status}`;
       rendered.push(this.padVisible(line, width));
     }
 
