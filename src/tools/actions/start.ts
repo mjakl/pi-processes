@@ -36,7 +36,7 @@ export function executeStart(
   try {
     const proc = manager.start(params.name, params.command, ctx.cwd);
 
-    const message = `Started "${proc.name}" (${proc.id}, PID: ${proc.pid})\nLogs: ${proc.stdoutFile}\nYou will be notified automatically when this process exits, fails, or is externally killed. Do not poll unless asked.`;
+    const message = `Started "${proc.name}" (${proc.id}, PID: ${proc.pid})\nLogs: ${proc.stdoutFile}\nYou will be notified when this process ends. No need to poll.`;
     return {
       content: [{ type: "text", text: message }],
       details: {
