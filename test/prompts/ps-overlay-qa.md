@@ -1,8 +1,8 @@
 Run through all steps without waiting for confirmation. Keep messages short.
 
 1. Start `./test/test-output.sh` as a background process named `stream`.
-2. Start `./test/test-exit-success.sh 2` as a background process named `success` with `alertOnSuccess=true`.
-3. Start `./test/test-exit-failure.sh 2` as a background process named `failure` with `alertOnFailure=true`.
+2. Start `./test/test-exit-success.sh 2` as a background process named `success`.
+3. Start `./test/test-exit-failure.sh 2` as a background process named `failure`.
 4. Start `./test/test-ignore-term.sh` as a background process named `stubborn`.
 5. Tell me to open `/ps` and verify these behaviors:
    - the status line shows active and finished counts

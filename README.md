@@ -53,13 +53,9 @@ For `output`, `logs`, and `kill`, `id` must be either:
 
 If multiple processes share the same name, use the process ID.
 
-#### Alerts for `start`
+#### Notifications for `start`
 
-- `alertOnSuccess` (default: `true`) - get a turn when the process exits successfully; set `false` to suppress it
-- `alertOnFailure` (default: `true`) - get a turn when the process exits with an error; set `false` to suppress it
-- `alertOnKill` (default: `true`) - get a turn when the process is killed externally; set `false` to suppress it
-
-You do not need to poll after starting a process. By default the agent is notified on exit, failure, and external kill.
+You do not need to poll after starting a process. The agent is notified automatically on exit, failure, and external kill.
 
 #### Logs and output
 

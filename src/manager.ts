@@ -16,7 +16,6 @@ import {
   type ProcessInfo,
   type ProcessStatus,
   type ResolveProcessResult,
-  type StartOptions,
 } from "./constants";
 import { isProcessGroupAlive, killProcessGroup } from "./utils";
 import { spawnCommand } from "./utils/command-executor";
@@ -24,6 +23,7 @@ import { spawnCommand } from "./utils/command-executor";
 interface ManagedProcess extends ProcessInfo {
   lastSignalSent: NodeJS.Signals | null;
   combinedFile: string;
+  triggerAgentTurnOnEnd: boolean;
 }
 
 interface ProcessManagerOptions {
@@ -61,7 +61,11 @@ export class ProcessManager {
     this.emit({ type: "processes_changed" });
 
     if (next === "exited" || next === "killed") {
-      this.emit({ type: "process_ended", info: this.toProcessInfo(managed) });
+      this.emit({
+        type: "process_ended",
+        info: this.toProcessInfo(managed),
+        triggerAgentTurn: managed.triggerAgentTurnOnEnd,
+      });
     }
 
     this.ensureWatcherRunning();
@@ -116,12 +120,7 @@ export class ProcessManager {
     }
   }
 
-  start(
-    name: string,
-    command: string,
-    cwd: string,
-    options?: StartOptions,
-  ): ProcessInfo {
+  start(name: string, command: string, cwd: string): ProcessInfo {
     const id = `proc_${++this.counter}`;
     const stdoutFile = join(this.logDir, `${id}-stdout.log`);
     const stderrFile = join(this.logDir, `${id}-stderr.log`);
@@ -148,11 +147,9 @@ export class ProcessManager {
       success: null,
       stdoutFile,
       stderrFile,
-      combinedFile,
-      alertOnSuccess: options?.alertOnSuccess ?? true,
-      alertOnFailure: options?.alertOnFailure ?? true,
-      alertOnKill: options?.alertOnKill ?? true,
       lastSignalSent: null,
+      combinedFile,
+      triggerAgentTurnOnEnd: true,
     };
 
     this.processes.set(id, managed);
@@ -351,9 +348,6 @@ export class ProcessManager {
           success: false,
           stdoutFile: "",
           stderrFile: "",
-          alertOnSuccess: false,
-          alertOnFailure: true,
-          alertOnKill: false,
         },
         reason: "not_found",
       };
@@ -362,7 +356,7 @@ export class ProcessManager {
     const signal = opts?.signal ?? "SIGTERM";
     const timeoutMs = opts?.timeoutMs ?? 3000;
 
-    managed.alertOnKill = false;
+    managed.triggerAgentTurnOnEnd = false;
 
     if (!LIVE_STATUSES.has(managed.status)) {
       return { ok: true, info: this.toProcessInfo(managed) };
@@ -508,9 +502,6 @@ export class ProcessManager {
       success: managed.success,
       stdoutFile: managed.stdoutFile,
       stderrFile: managed.stderrFile,
-      alertOnSuccess: managed.alertOnSuccess,
-      alertOnFailure: managed.alertOnFailure,
-      alertOnKill: managed.alertOnKill,
     };
   }
 }

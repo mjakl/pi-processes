@@ -27,14 +27,11 @@ export interface ProcessInfo {
   success: boolean | null; // null if running, true if exit code 0, false otherwise
   stdoutFile: string;
   stderrFile: string;
-  alertOnSuccess: boolean;
-  alertOnFailure: boolean;
-  alertOnKill: boolean;
 }
 
 export type ManagerEvent =
   | { type: "process_started"; info: ProcessInfo }
-  | { type: "process_ended"; info: ProcessInfo }
+  | { type: "process_ended"; info: ProcessInfo; triggerAgentTurn: boolean }
   | { type: "processes_changed" };
 
 export type KillResult =
@@ -44,12 +41,6 @@ export type KillResult =
 export type ResolveProcessResult =
   | { ok: true; info: ProcessInfo }
   | { ok: false; reason: "not_found" | "ambiguous"; matches?: ProcessInfo[] };
-
-export interface StartOptions {
-  alertOnSuccess?: boolean;
-  alertOnFailure?: boolean;
-  alertOnKill?: boolean;
-}
 
 export interface ProcessesDetails {
   action: string;

@@ -16,6 +16,7 @@ vi.mock("./utils", () => ({
   killProcessGroup: mocks.killProcessGroup,
 }));
 
+import type { ManagerEvent } from "./constants";
 import { ProcessManager } from "./manager";
 
 class FakeChildProcess extends EventEmitter {
@@ -99,6 +100,36 @@ describe("ProcessManager", () => {
 
     expect(result.ok).toBe(true);
     expect(manager.get(proc.id)?.status).toBe("killed");
+  });
+
+  it("suppresses the follow-up agent turn after a tool-triggered kill", async () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    const endedEvents: ManagerEvent[] = [];
+    const unsubscribe = manager.onEvent((event) => {
+      if (event.type === "process_ended") {
+        endedEvents.push(event);
+      }
+    });
+
+    mocks.isProcessGroupAlive.mockReturnValue(false);
+
+    const killPromise = manager.kill(proc.id, {
+      signal: "SIGTERM",
+      timeoutMs: 3000,
+    });
+
+    await vi.advanceTimersByTimeAsync(3000);
+    const result = await killPromise;
+
+    unsubscribe();
+
+    expect(result.ok).toBe(true);
+    expect(endedEvents).toHaveLength(1);
+    expect(endedEvents[0]).toMatchObject({
+      type: "process_ended",
+      triggerAgentTurn: false,
+      info: { id: proc.id, status: "killed" },
+    });
   });
 
   it("resolves only exact ids or exact names and reports ambiguity", () => {

@@ -19,13 +19,9 @@ export function setupProcessEndHook(pi: ExtensionAPI, manager: ProcessManager) {
 
     const info: ProcessInfo = event.info;
 
-    // Determine if the agent should get a turn to react to this process ending.
-    // When true, the agent receives the message in its context and can respond
-    // (e.g. check results, fix code, restart the process).
-    const triggerAgentTurn =
-      (info.status === "killed" && info.alertOnKill) ||
-      (info.status === "exited" && info.success && info.alertOnSuccess) ||
-      (info.status === "exited" && !info.success && info.alertOnFailure);
+    // The process tool always notifies the agent when a process ends, except
+    // when the end was caused by a tool-triggered kill.
+    const triggerAgentTurn = event.triggerAgentTurn;
 
     const runtime = formatRuntime(info.startTime, info.endTime);
 
@@ -40,8 +36,7 @@ export function setupProcessEndHook(pi: ExtensionAPI, manager: ProcessManager) {
       message = `Process '${info.name}' crashed with exit code ${info.exitCode ?? "?"} (${runtime})`;
     }
 
-    // Send the message to the conversation - displayed via custom renderer in UI
-    // Only trigger an agent turn when the notification preferences say so.
+    // Send the message to the conversation - displayed via custom renderer in UI.
     const details: ProcessUpdateDetails = {
       processId: info.id,
       processName: info.name,

@@ -42,24 +42,6 @@ const ProcessesParams = Type.Object({
         "Force-kill the process with SIGKILL for kill action. Use after a normal terminate times out, or when you need an immediate hard stop.",
     }),
   ),
-  alertOnSuccess: Type.Optional(
-    Type.Boolean({
-      description:
-        "Notify the agent on successful exit (default: true). Set false to suppress.",
-    }),
-  ),
-  alertOnFailure: Type.Optional(
-    Type.Boolean({
-      description:
-        "Notify the agent on failure (default: true). Set false to suppress.",
-    }),
-  ),
-  alertOnKill: Type.Optional(
-    Type.Boolean({
-      description:
-        "Notify the agent on external kill (default: true). Set false to suppress. Tool-triggered kills never notify.",
-    }),
-  ),
 });
 
 type ProcessesParamsType = Static<typeof ProcessesParams>;
@@ -75,7 +57,7 @@ Actions: start, list, output, logs, kill, clear.
 - output/logs/kill require 'id' (exact process ID or exact friendly name)
 - kill supports optional 'force=true' for SIGKILL
 
-By default, the agent is notified when a process exits, fails, or is externally killed. Set alertOnSuccess/alertOnFailure/alertOnKill to false to suppress specific follow-ups. Tool-triggered kills never notify.
+The agent is notified automatically when a process exits, fails, or is externally killed. Tool-triggered kills never notify.
 
 No polling needed: start the process and continue working.`,
 

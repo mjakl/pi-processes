@@ -14,9 +14,6 @@ interface ActionParams {
   name?: string;
   id?: string;
   force?: boolean;
-  alertOnSuccess?: boolean;
-  alertOnFailure?: boolean;
-  alertOnKill?: boolean;
 }
 
 export async function executeAction(
