@@ -43,7 +43,7 @@ export function executeStart(
       alertOnKill: params.alertOnKill,
     });
 
-    const message = `Started "${proc.name}" (${proc.id}, PID: ${proc.pid})\nLogs: ${proc.stdoutFile}`;
+    const message = `Started "${proc.name}" (${proc.id}, PID: ${proc.pid})\nLogs: ${proc.stdoutFile}\nYou will be notified automatically when this process exits, fails, or is externally killed unless alerts are explicitly disabled. Do not poll unless asked.`;
     return {
       content: [{ type: "text", text: message }],
       details: {
