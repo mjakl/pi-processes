@@ -18,7 +18,7 @@ export interface ProcessesConfig {
     shellPath?: string;
   };
   interception?: {
-    /** Block background bash commands (&, nohup, disown, setsid) and guide the model to use the process tool. */
+    /** Block shell backgrounding and obvious long-running bash commands, and guide the model to use the process tool. */
     blockBackgroundCommands?: boolean;
   };
 }
@@ -43,7 +43,7 @@ const DEFAULT_CONFIG: ResolvedProcessesConfig = {
   },
   execution: {},
   interception: {
-    blockBackgroundCommands: false,
+    blockBackgroundCommands: true,
   },
 };
 

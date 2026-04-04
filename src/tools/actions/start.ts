@@ -36,7 +36,7 @@ export function executeStart(
   try {
     const proc = manager.start(params.name, params.command, ctx.cwd);
 
-    const message = `Started "${proc.name}" (${proc.id}, PID: ${proc.pid})\nLogs: ${proc.stdoutFile}\nYou will be notified when this process ends. No need to poll.`;
+    const message = `Started "${proc.name}" (${proc.id}, PID: ${proc.pid})\nLogs: ${proc.stdoutFile}\nContinue working. You will be notified when this process ends. Use process output only if you need to peek at intermediate logs while it runs.`;
     return {
       content: [{ type: "text", text: message }],
       details: {

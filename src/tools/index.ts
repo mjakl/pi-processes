@@ -60,6 +60,12 @@ Actions: start, list, output, logs, kill, clear.
 The agent is notified automatically when a process exits, fails, or is externally killed. Tool-triggered kills never notify.
 
 No polling needed: start the process and continue working.`,
+    promptSnippet:
+      "Start and manage background processes without blocking the conversation",
+    promptGuidelines: [
+      "Use this instead of bash for dev servers, watch mode, log tails, port-forwards, or commands that should keep running.",
+      "After start, continue working; use output or logs only when needed.",
+    ],
 
     parameters: ProcessesParams,
 

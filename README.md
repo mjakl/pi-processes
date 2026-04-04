@@ -97,7 +97,7 @@ Global config lives in `~/.pi/agent/extensions/process.json`.
     "shellPath": "/absolute/path/to/bash"
   },
   "interception": {
-    "blockBackgroundCommands": false
+    "blockBackgroundCommands": true
   }
 }
 ```
@@ -105,7 +105,7 @@ Global config lives in `~/.pi/agent/extensions/process.json`.
 - `output.defaultTailLines` - default number of lines returned by `process output`
 - `output.maxOutputLines` - hard cap for `process output`
 - `execution.shellPath` - absolute shell path override used for process startup
-- `interception.blockBackgroundCommands` - block background shell commands (`&`, `nohup`, `disown`, `setsid`) and guide the agent to use the `process` tool instead
+- `interception.blockBackgroundCommands` - block shell backgrounding (`&`, `nohup`, `disown`, `setsid`) and obvious long-running foreground commands such as `pnpm dev`, `docker compose up`, `tail -f`, or `kubectl port-forward`, and guide the agent to use the `process` tool instead
 
 ## Notes
 
