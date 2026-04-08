@@ -57,14 +57,19 @@ Actions: start, list, output, logs, kill, clear.
 - output/logs/kill require 'id' (exact process ID or exact friendly name)
 - kill supports optional 'force=true' for SIGKILL
 
-The agent is notified automatically when a process exits, fails, or is externally killed. Tool-triggered kills never notify.
+Important behavior:
+- After 'start', do not poll with repeated 'list', 'output', or 'logs' calls just to check whether the process is still running.
+- This tool is event-driven: the agent is notified automatically when a process exits, fails, or is externally killed.
+- Tool-triggered kills never notify.
+- Use 'output' or 'logs' only on demand: when the user asks, when you need a one-off diagnostic snapshot, or when investigating a problem.
 
-No polling needed: start the process and continue working.`,
+Preferred pattern: start the process once, continue the conversation, and wait for the automatic notification instead of polling.`,
     promptSnippet:
-      "Start and manage background processes without blocking the conversation",
+      "Start and manage background processes without blocking the conversation; after start, do not poll",
     promptGuidelines: [
       "Use this instead of bash for dev servers, watch mode, log tails, port-forwards, or commands that should keep running.",
-      "After start, continue working; use output or logs only when needed.",
+      "After start, continue working. Do not loop on list/output/logs to wait for completion; rely on the automatic notification.",
+      "Use output or logs only for a one-off inspection, explicit user request, or debugging.",
     ],
 
     parameters: ProcessesParams,

@@ -8,6 +8,12 @@ The `process` tool is for **LLM use only**, not for users directly. Users can mo
 
 During UI tests that require processes to be running, either give the user a prompt to send to the agent (which will start the processes via the `process` tool), or use tmux to drive it programmatically. Never instruct the user to run shell commands manually.
 
+## Polling behavior
+
+The `process` tool is event-driven. After `process start`, do not poll with repeated `process list`, `process output`, or `process logs` calls just to check whether a process is still running or has exited.
+
+Instead, start the process once, continue working, and rely on the automatic notification sent when the process exits, fails, or is externally killed. Use `output`/`logs` only for explicit inspection, debugging, or a one-off diagnostic snapshot.
+
 ## Stack
 
 - TypeScript (strict mode), pnpm 10.26.1, Biome, Changesets

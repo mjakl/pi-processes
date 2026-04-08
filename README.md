@@ -55,12 +55,21 @@ If multiple processes share the same name, use the process ID.
 
 #### Notifications for `start`
 
-You do not need to poll after starting a process. The agent is notified automatically on exit, failure, and external kill.
+Do not poll after starting a process.
+
+This tool is event-driven: the agent is notified automatically when a process exits, fails, or is externally killed. The intended pattern is:
+
+1. `process start`
+2. continue the conversation or do other work
+3. wait for the automatic notification if the process ends
+
+Repeated `process list`, `process output`, or `process logs` calls just to see whether the process is still running are an anti-pattern.
 
 #### Logs and output
 
-- `process output` returns tailed stdout/stderr for agent consumption.
+- `process output` returns a one-off tailed stdout/stderr snapshot for agent consumption.
 - `process logs` returns file paths for `stdout`, `stderr`, and a combined view for the `/ps` overlay.
+- Use `output`/`logs` only when the user asks, when you need a diagnostic snapshot, or when investigating a problem - not as a polling loop.
 
 #### Killing processes
 
