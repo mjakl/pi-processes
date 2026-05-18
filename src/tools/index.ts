@@ -1,4 +1,3 @@
-import { ToolBody, ToolCallHeader, ToolFooter } from "@aliou/pi-utils-ui";
 import { StringEnum } from "@mariozechner/pi-ai";
 import type {
   AgentToolResult,
@@ -12,6 +11,7 @@ import type { ProcessesDetails } from "../constants";
 import type { ProcessManager } from "../manager";
 import { formatRuntime, hasAnsi, stripAnsi, truncateCmd } from "../utils";
 import { executeAction } from "./actions";
+import { ToolBody, ToolCallHeader, ToolFooter } from "./tool-rendering";
 
 const ProcessesParams = Type.Object({
   action: StringEnum(
