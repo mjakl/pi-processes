@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { ProcessInfo } from "../../constants";
 import { executeStart } from "./start";
 
+const START_TIME = new Date(2024, 0, 2, 3, 4, 5).getTime();
+
 function fakeProcess(overrides: Partial<ProcessInfo> = {}): ProcessInfo {
   return {
     id: "proc_1",
@@ -9,7 +11,7 @@ function fakeProcess(overrides: Partial<ProcessInfo> = {}): ProcessInfo {
     pid: 1234,
     command: "pnpm dev",
     cwd: process.cwd(),
-    startTime: 1_000,
+    startTime: START_TIME,
     endTime: null,
     status: "running",
     exitCode: null,
@@ -34,6 +36,7 @@ describe("executeStart", () => {
 
     expect(result.details.success).toBe(true);
     expect(result.terminate).toBe(true);
+    expect(result.details.message).toContain("Started at: 2024-01-02 03:04:05");
     expect(result.details.message).toContain("wait for the automatic");
   });
 

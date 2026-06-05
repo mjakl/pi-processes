@@ -1,5 +1,16 @@
 import type { ProcessInfo } from "../constants";
 
+export function formatTimestamp(timestamp: number): string {
+  const date = new Date(timestamp);
+  const datePart = `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+  const timePart = `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
+  return `${datePart} ${timePart}`;
+}
+
+function pad2(value: number): string {
+  return value.toString().padStart(2, "0");
+}
+
 export function formatRuntime(
   startTime: number,
   endTime: number | null,

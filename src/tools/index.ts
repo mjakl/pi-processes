@@ -8,7 +8,13 @@ import { Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import type { ProcessesDetails } from "../constants";
 import type { ProcessManager } from "../manager";
-import { formatRuntime, hasAnsi, stripAnsi, truncateCmd } from "../utils";
+import {
+  formatRuntime,
+  formatTimestamp,
+  hasAnsi,
+  stripAnsi,
+  truncateCmd,
+} from "../utils";
 import { executeAction } from "./actions";
 import { ToolBody, ToolCallHeader, ToolFooter } from "./tool-rendering";
 
@@ -176,6 +182,11 @@ Preferred pattern: start the process once, let the turn stop, and resume from th
           value:
             theme.fg("success", "Started") +
             ` ${theme.fg("accent", `"${process.name}"`)} (${process.id}, PID: ${process.pid})`,
+          showCollapsed: true,
+        });
+        fields.push({
+          label: "Started at",
+          value: theme.fg("muted", formatTimestamp(process.startTime)),
           showCollapsed: true,
         });
       } else if (details.action === "output" && details.output) {
