@@ -40,7 +40,6 @@
     "@earendil-works/pi-coding-agent": "0.75.1",
     "@earendil-works/pi-tui": "0.75.1",
     "@types/node": "^25.0.10",
-    "husky": "^9.1.7",
     "typebox": "^1.1.24",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
@@ -49,8 +48,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check",
     "format": "biome check --write",
-    "test": "vitest run",
-    "prepare": "[ -d .git ] && husky || true"
+    "test": "vitest run"
   },
   "packageManager": "pnpm@10.26.1",
   "peerDependenciesMeta": {

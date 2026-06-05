@@ -131,6 +131,22 @@ Global config lives in `~/.pi/agent/extensions/process.json`.
 - `execution.shellPath` - absolute shell path override used for process startup
 - `interception.blockBackgroundCommands` - block shell backgrounding (`&`, `nohup`, `disown`, `setsid`) and obvious long-running foreground commands such as `pnpm dev`, `docker compose up`, `tail -f`, or `kubectl port-forward`, and guide the agent to use the `process` tool instead
 
+## Development
+
+There are no Git hooks installed by this repository. Before committing or opening a PR, consider running:
+
+```bash
+pnpm typecheck
+pnpm lint
+pnpm test
+```
+
+After dependency changes, also verify the lockfile with:
+
+```bash
+pnpm install --frozen-lockfile --ignore-scripts
+```
+
 ## Notes
 
 - Log files live in a temporary directory managed by the extension.
