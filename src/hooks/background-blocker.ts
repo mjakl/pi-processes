@@ -42,7 +42,7 @@ const DETACH_FLAGS = new Set(["-d", "--detach"]);
 const SUSPICIOUS_SCRIPT_NAME =
   /(^|[-_.])(dev|serve|server|start|watch|tail|logs?|port[-_]?forward|preview)([-_.]|$)/i;
 
-export interface ManagedCommandDecision {
+interface ManagedCommandDecision {
   kind: "background" | "long_running";
   suggestedName: string;
 }

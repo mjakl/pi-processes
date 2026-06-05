@@ -315,7 +315,6 @@ export class ProcessesComponent implements Component {
       if (!logFiles) return null;
       viewer = new LogFileViewer({
         filePath: logFiles.combinedFile,
-        format: "combined",
         theme: this.theme,
         follow: true,
       });

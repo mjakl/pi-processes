@@ -1,11 +1,5 @@
 import { EventEmitter } from "node:events";
-import {
-  appendFileSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-} from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -301,20 +295,6 @@ export class ProcessManager {
     });
   }
 
-  getFullOutput(id: string): { stdout: string; stderr: string } | null {
-    const managed = this.processes.get(id);
-    if (!managed) return null;
-
-    try {
-      return {
-        stdout: readFileSync(managed.stdoutFile, "utf-8"),
-        stderr: readFileSync(managed.stderrFile, "utf-8"),
-      };
-    } catch {
-      return { stdout: "", stderr: "" };
-    }
-  }
-
   getLogFiles(
     id: string,
   ): { stdoutFile: string; stderrFile: string; combinedFile: string } | null {
@@ -465,20 +445,6 @@ export class ProcessManager {
     }
   }
 
-  getFileSize(id: string): { stdout: number; stderr: number } | null {
-    const managed = this.processes.get(id);
-    if (!managed) return null;
-
-    try {
-      return {
-        stdout: statSync(managed.stdoutFile).size,
-        stderr: statSync(managed.stderrFile).size,
-      };
-    } catch {
-      return { stdout: 0, stderr: 0 };
-    }
-  }
-
   private readTailLines(filePath: string, lines: number): string[] {
     try {
       const content = readFileSync(filePath, "utf-8");
@@ -509,5 +475,3 @@ export class ProcessManager {
     };
   }
 }
-
-export type { ProcessInfo, ProcessStatus, ManagerEvent, KillResult };

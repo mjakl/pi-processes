@@ -7,18 +7,18 @@ import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 
 type Tone = "muted" | "accent" | "success" | "warning" | "error" | "dim";
 
-export interface ToolCallHeaderOptionArg {
+interface ToolCallHeaderOptionArg {
   label: string;
   value: string;
   tone?: Tone;
 }
 
-export interface ToolCallHeaderLongArg {
+interface ToolCallHeaderLongArg {
   label?: string;
   value: string;
 }
 
-export interface ToolCallHeaderConfig {
+interface ToolCallHeaderConfig {
   toolName: string;
   action?: string;
   mainArg?: string;
@@ -72,11 +72,11 @@ export class ToolCallHeader implements Component {
   }
 }
 
-export type ToolBodyField =
+type ToolBodyField =
   | { label: string; value: string; showCollapsed?: boolean }
   | (Component & { showCollapsed?: boolean });
 
-export interface ToolBodyConfig {
+interface ToolBodyConfig {
   fields: ToolBodyField[];
   footer?: Component;
   includeSpacerBeforeFooter?: boolean;
@@ -122,13 +122,13 @@ export class ToolBody implements Component {
   }
 }
 
-export interface ToolFooterItem {
+interface ToolFooterItem {
   label?: string;
   value: string;
   tone?: Exclude<Tone, "dim">;
 }
 
-export interface ToolFooterConfig {
+interface ToolFooterConfig {
   items: ToolFooterItem[];
   separator?: " - " | " | ";
   truncate?: boolean;
