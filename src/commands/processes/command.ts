@@ -6,6 +6,13 @@ export function registerPsCommand(
   pi: ExtensionAPI,
   manager: ProcessManager,
 ): void {
+  let activeComponent: ProcessesComponent | null = null;
+
+  pi.on("session_shutdown", () => {
+    activeComponent?.close();
+    activeComponent = null;
+  });
+
   pi.registerCommand("ps", {
     description: "Open the process overlay",
     handler: async (_args, ctx) => {
@@ -13,9 +20,19 @@ export function registerPsCommand(
         return;
       }
 
-      await ctx.ui.custom<null>(
+      const result = await ctx.ui.custom<null>(
         (tui, theme, _keybindings, done) => {
-          return new ProcessesComponent(tui, theme, () => done(null), manager);
+          const component = new ProcessesComponent(
+            tui,
+            theme,
+            () => {
+              activeComponent = null;
+              done(null);
+            },
+            manager,
+          );
+          activeComponent = component;
+          return component;
         },
         {
           overlay: true,
@@ -26,6 +43,13 @@ export function registerPsCommand(
           },
         },
       );
+
+      if (result === undefined) {
+        ctx.ui.notify(
+          "The /ps overlay requires interactive TUI mode.",
+          "warning",
+        );
+      }
     },
   });
 }

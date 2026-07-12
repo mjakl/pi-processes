@@ -86,4 +86,60 @@ describe("ProcessesComponent", () => {
       }
     }
   });
+
+  it("fits short terminals and gives narrow layouts to the log pane", () => {
+    writeFileSync(combinedFile, "1:visible-log\n");
+    const process = processInfo({ name: "server" });
+    const manager = {
+      list: vi.fn(() => [process]),
+      onEvent: vi.fn(() => vi.fn()),
+      getLogFiles: vi.fn(() => ({
+        stdoutFile: join(dir, "stdout.log"),
+        stderrFile: join(dir, "stderr.log"),
+        combinedFile,
+      })),
+      kill: vi.fn(),
+      clearFinished: vi.fn(),
+    } as unknown as ProcessManager;
+    const terminal = { rows: 5 };
+    const tui = {
+      terminal,
+      requestRender: vi.fn(),
+    } as unknown as TUI;
+    component = new ProcessesComponent(tui, theme, vi.fn(), manager);
+
+    const shortLines = component.render(30);
+    expect(shortLines).toHaveLength(4);
+    expect(shortLines.join("\n")).toContain("visible-log");
+
+    terminal.rows = 1;
+    expect(component.render(30)).toHaveLength(1);
+  });
+
+  it("handles Ctrl-C and disposal without leaking timers or subscriptions", () => {
+    writeFileSync(combinedFile, "");
+    const unsubscribe = vi.fn();
+    const done = vi.fn();
+    const manager = {
+      list: vi.fn(() => []),
+      onEvent: vi.fn(() => unsubscribe),
+      getLogFiles: vi.fn(),
+      kill: vi.fn(),
+      clearFinished: vi.fn(),
+    } as unknown as ProcessManager;
+    const tui = {
+      terminal: { rows: 24 },
+      requestRender: vi.fn(),
+    } as unknown as TUI;
+    component = new ProcessesComponent(tui, theme, done, manager);
+
+    expect(vi.getTimerCount()).toBe(1);
+    component.handleInput("\u0003");
+    expect(vi.getTimerCount()).toBe(0);
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(done).toHaveBeenCalledOnce();
+
+    component.dispose();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
 });

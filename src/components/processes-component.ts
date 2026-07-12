@@ -13,12 +13,19 @@ import { LogFileViewer } from "./log-file-viewer";
 
 const REFRESH_INTERVAL_MS = 300;
 const OVERLAY_FRACTION = 0.8;
-const MIN_OVERLAY_ROWS = 14;
-const CHROME_ROWS = 6;
+const MIN_SPLIT_WIDTH = 48;
 const MIN_LIST_WIDTH = 24;
 const MAX_LIST_WIDTH = 36;
 
 type Tone = "accent" | "success" | "warning" | "error" | "dim";
+
+interface OverlayLayout {
+  overlayRows: number;
+  bodyRows: number;
+  showDividers: boolean;
+  showStatus: boolean;
+  showFooter: boolean;
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -80,6 +87,8 @@ export class ProcessesComponent implements Component {
   private viewers: Map<string, LogFileViewer> = new Map();
   private timer: ReturnType<typeof setInterval> | null = null;
   private unsubscribeManager: (() => void) | null = null;
+  private disposed = false;
+  private completed = false;
 
   constructor(
     private readonly tui: TUI,
@@ -97,10 +106,16 @@ export class ProcessesComponent implements Component {
     this.timer = setInterval(() => {
       this.tui.requestRender();
     }, REFRESH_INTERVAL_MS);
+    this.timer.unref();
   }
 
   handleInput(data: string): boolean {
-    if (matchesKey(data, "escape") || data === "q" || data === "Q") {
+    if (
+      matchesKey(data, "escape") ||
+      matchesKey(data, "ctrl+c") ||
+      data === "q" ||
+      data === "Q"
+    ) {
       this.close();
       return true;
     }
@@ -132,11 +147,13 @@ export class ProcessesComponent implements Component {
         const signal =
           process.status === "terminate_timeout" ? "SIGKILL" : "SIGTERM";
         const timeoutMs = signal === "SIGKILL" ? 200 : 3000;
-        void this.manager.kill(process.id, {
-          signal,
-          timeoutMs,
-          notifyOnEnd: true,
-        });
+        void this.manager
+          .kill(process.id, {
+            signal,
+            timeoutMs,
+            notifyOnEnd: true,
+          })
+          .catch(() => this.tui.requestRender());
       }
       return true;
     }
@@ -192,24 +209,23 @@ export class ProcessesComponent implements Component {
   }
 
   private renderInner(width: number): string[] {
-    const overlayRows = Math.max(
-      MIN_OVERLAY_ROWS,
-      Math.floor((this.tui.terminal.rows ?? 24) * OVERLAY_FRACTION),
-    );
-    const bodyRows = Math.max(4, overlayRows - CHROME_ROWS);
-    this.ensureSelectionVisible(bodyRows);
+    const layout = this.getLayout();
+    this.ensureSelectionVisible(Math.max(1, layout.bodyRows));
 
     const border = (text: string) => this.theme.fg("dim", text);
     const accent = (text: string) => this.theme.fg("accent", text);
 
     const innerWidth = Math.max(0, width - 4);
-    const separator = innerWidth >= 20 ? border(" │ ") : "";
+    const showListPane = innerWidth >= MIN_SPLIT_WIDTH;
+    const separator = showListPane ? border(" │ ") : "";
     const separatorWidth = visibleWidth(separator);
-    const desiredListWidth = clamp(
-      Math.floor(innerWidth * 0.32),
-      Math.min(MIN_LIST_WIDTH, innerWidth),
-      Math.min(MAX_LIST_WIDTH, innerWidth),
-    );
+    const desiredListWidth = showListPane
+      ? clamp(
+          Math.floor(innerWidth * 0.32),
+          Math.min(MIN_LIST_WIDTH, innerWidth),
+          Math.min(MAX_LIST_WIDTH, innerWidth),
+        )
+      : 0;
     const listWidth = Math.min(
       desiredListWidth,
       Math.max(0, innerWidth - separatorWidth - 1),
@@ -243,32 +259,55 @@ export class ProcessesComponent implements Component {
         border(`${"─".repeat(rightDash)}╮`),
     );
 
-    lines.push(divider());
+    if (layout.overlayRows === 1) return lines;
+    if (layout.overlayRows === 2) {
+      lines.push(border(`╰${"─".repeat(Math.max(0, width - 2))}╯`));
+      return lines;
+    }
+
+    if (layout.showDividers) lines.push(divider());
 
     const selected = this.currentProcess();
     const viewer = this.currentViewer();
-    const leftRows = this.renderProcessRows(listWidth, bodyRows);
-    const rightRows = this.renderLogRows(logWidth, bodyRows, selected, viewer);
+    const leftRows = showListPane
+      ? this.renderProcessRows(listWidth, layout.bodyRows)
+      : [];
+    const rightRows = this.renderLogRows(
+      logWidth,
+      layout.bodyRows,
+      selected,
+      viewer,
+    );
 
-    for (let i = 0; i < bodyRows; i++) {
+    for (let i = 0; i < layout.bodyRows; i++) {
       lines.push(paneRow(leftRows[i] ?? "", rightRows[i] ?? ""));
     }
 
-    lines.push(divider());
-    lines.push(row(this.renderStatusLine(innerWidth, selected, viewer)));
-    lines.push(row(this.renderFooter(innerWidth)));
+    if (layout.showDividers) lines.push(divider());
+    if (layout.showStatus) {
+      lines.push(row(this.renderStatusLine(innerWidth, selected, viewer)));
+    }
+    if (layout.showFooter) lines.push(row(this.renderFooter(innerWidth)));
     lines.push(border(`╰${"─".repeat(Math.max(0, width - 2))}╯`));
     return lines;
   }
 
-  private close(): void {
+  close(): void {
+    if (this.completed) return;
+    this.completed = true;
+    this.dispose();
+    this.done();
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
     }
     this.unsubscribeManager?.();
     this.unsubscribeManager = null;
-    this.done();
   }
 
   private sortProcesses(processes: ProcessInfo[]): ProcessInfo[] {
@@ -334,12 +373,38 @@ export class ProcessesComponent implements Component {
     return viewer;
   }
 
-  private getBodyRows(): number {
+  private getLayout(): OverlayLayout {
+    const terminalRows = Math.max(1, this.tui.terminal.rows ?? 24);
     const overlayRows = Math.max(
-      MIN_OVERLAY_ROWS,
-      Math.floor((this.tui.terminal.rows ?? 24) * OVERLAY_FRACTION),
+      1,
+      Math.floor(terminalRows * OVERLAY_FRACTION),
     );
-    return Math.max(4, overlayRows - CHROME_ROWS);
+    if (overlayRows <= 2) {
+      return {
+        overlayRows,
+        bodyRows: 0,
+        showDividers: false,
+        showStatus: false,
+        showFooter: false,
+      };
+    }
+
+    const showDividers = overlayRows >= 9;
+    const showStatus = overlayRows >= 7;
+    const showFooter = overlayRows >= 6;
+    const chromeRows =
+      2 + (showDividers ? 2 : 0) + (showStatus ? 1 : 0) + (showFooter ? 1 : 0);
+    return {
+      overlayRows,
+      bodyRows: Math.max(1, overlayRows - chromeRows),
+      showDividers,
+      showStatus,
+      showFooter,
+    };
+  }
+
+  private getBodyRows(): number {
+    return Math.max(1, this.getLayout().bodyRows);
   }
 
   private ensureSelectionVisible(bodyRows: number): void {
@@ -441,12 +506,20 @@ export class ProcessesComponent implements Component {
       return this.padVisible(dim("No processes"), width);
     }
 
-    const meta = `${accent(sanitizeLine(selected.name))}${dim(" • ")}${dim(statusLabel(selected))}${dim(" • ")}${dim(formatRuntime(selected.startTime, selected.endTime))}`;
-    const viewerStatus = viewer.renderStatusBar(
-      Math.max(16, width - visibleWidth(meta) - 3),
+    const viewerWidth = Math.min(20, Math.max(0, Math.floor(width * 0.35)));
+    const separator = viewerWidth > 0 ? dim(" | ") : "";
+    const metaWidth = Math.max(
+      0,
+      width - viewerWidth - visibleWidth(separator),
     );
-    const combined = `${meta}${dim(" | ")}${viewerStatus}`;
-    return this.padVisible(combined, width);
+    const fixedMeta = `${dim(statusLabel(selected))}${dim(" • ")}${dim(formatRuntime(selected.startTime, selected.endTime))}${dim(" • ")}`;
+    const nameWidth = Math.max(0, metaWidth - visibleWidth(fixedMeta));
+    const name = accent(
+      truncateToWidth(sanitizeLine(selected.name), nameWidth, ""),
+    );
+    const meta = this.padVisible(`${fixedMeta}${name}`, metaWidth);
+    const viewerStatus = viewer.renderStatusBar(viewerWidth);
+    return this.padVisible(`${meta}${separator}${viewerStatus}`, width);
   }
 
   private renderFooter(width: number): string {

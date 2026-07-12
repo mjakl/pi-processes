@@ -2,16 +2,12 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { ProcessInfo } from "../constants";
 import type { ProcessManager } from "../manager";
 
 const STATUS_WIDGET_ID = "processes-status";
 
-function renderStatusWidgetLine(
-  processes: ProcessInfo[],
-  theme: ExtensionContext["ui"]["theme"],
-): string | null {
+function renderStatusWidgetLine(processes: ProcessInfo[]): string | null {
   if (processes.length === 0) return null;
 
   const activeCount = processes.filter(
@@ -22,15 +18,7 @@ function renderStatusWidgetLine(
   ).length;
   const finishedCount = processes.length - activeCount;
 
-  const line =
-    theme.fg("dim", "processes: ") +
-    theme.fg("accent", String(activeCount)) +
-    theme.fg("dim", " active") +
-    theme.fg("dim", " | ") +
-    theme.fg("dim", String(finishedCount)) +
-    theme.fg("dim", " finished");
-
-  return line;
+  return `processes: ${activeCount} active | ${finishedCount} finished`;
 }
 
 export function setupStatusWidget(
@@ -42,29 +30,13 @@ export function setupStatusWidget(
   const updateWidget = (): void => {
     if (!latestContext?.hasUI) return;
 
-    const processes = manager.list();
-    if (processes.length === 0) {
-      latestContext.ui.setWidget(STATUS_WIDGET_ID, undefined);
-      return;
-    }
-
-    latestContext.ui.setWidget(
-      STATUS_WIDGET_ID,
-      (_tui, theme) => ({
-        render(width: number): string[] {
-          const line = renderStatusWidgetLine(processes, theme);
-          if (!line) return [];
-          return [truncateToWidth(line, width, "", true)];
-        },
-        invalidate(): void {},
-      }),
-      { placement: "belowEditor" },
-    );
+    const line = renderStatusWidgetLine(manager.list());
+    latestContext.ui.setWidget(STATUS_WIDGET_ID, line ? [line] : undefined, {
+      placement: "belowEditor",
+    });
   };
 
-  manager.onEvent(() => {
-    updateWidget();
-  });
+  manager.onEvent(updateWidget);
 
   pi.on("session_start", async (_event, ctx) => {
     latestContext = ctx;

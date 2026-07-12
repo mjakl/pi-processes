@@ -162,6 +162,28 @@ describe("process tool contract", () => {
       .render(80)
       .join("\n");
     expect(list).toContain("Showing 1 of 2 process(es)");
+
+    const logs = tool
+      .renderResult(
+        {
+          content: [{ type: "text", text: "logs" }],
+          details: {
+            action: "logs",
+            success: true,
+            message: "logs",
+            logFiles: {
+              stdoutFile: "/tmp/stdout.log",
+              stderrFile: "/tmp/stderr.log",
+              combinedFile: "/tmp/combined.log",
+            },
+          },
+        },
+        { expanded: false, isPartial: false },
+        theme,
+      )
+      .render(80)
+      .join("\n");
+    expect(logs).toContain("/tmp/combined.log");
   });
 
   it("does not dispatch an already-aborted action", async () => {

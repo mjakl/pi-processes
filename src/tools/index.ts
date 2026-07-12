@@ -440,6 +440,14 @@ Preferred pattern: start the process once, let the turn stop, and resume from th
             0,
             0,
           ),
+          {
+            label: "Logs",
+            value: theme.fg(
+              "muted",
+              sanitizeLine(details.logFiles.combinedFile),
+            ),
+            showCollapsed: true,
+          },
         );
       } else {
         fields.push({
