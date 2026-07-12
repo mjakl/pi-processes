@@ -36,6 +36,8 @@ interface ProcessManagerOptions {
   getConfiguredShellPath?: () => string | undefined;
 }
 
+const MAX_LIVE_PROCESSES = 16;
+const MAX_RETAINED_PROCESSES = 32;
 const LOG_FILE_MAX_BYTES = 5 * 1024 * 1024;
 const LOG_FILE_RETAIN_BYTES = 4 * 1024 * 1024;
 const TAIL_READ_MAX_BYTES = 512 * 1024;
@@ -181,6 +183,20 @@ export class ProcessManager {
   }
 
   start(name: string, command: string, cwd: string): ProcessInfo {
+    if (this.processes.size >= MAX_RETAINED_PROCESSES) {
+      throw new Error(
+        `Process record limit reached (${MAX_RETAINED_PROCESSES}); clear finished processes before starting another`,
+      );
+    }
+    const liveCount = [...this.processes.values()].filter((process) =>
+      LIVE_STATUSES.has(process.status),
+    ).length;
+    if (liveCount >= MAX_LIVE_PROCESSES) {
+      throw new Error(
+        `Live process limit reached (${MAX_LIVE_PROCESSES}); stop a process before starting another`,
+      );
+    }
+
     const id = `proc_${++this.counter}`;
     const logDir = this.ensureLogDir();
     const stdoutFile = join(logDir, `${id}-stdout.log`);

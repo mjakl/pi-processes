@@ -172,6 +172,7 @@ Repeated `process list`, `process output`, or `process logs` calls just to check
 - `process output` is for one-off diagnostic snapshots in the conversation.
 - `process logs` returns log file paths for deeper inspection and for the `/ps` overlay.
 - Each stdout, stderr, and combined log file keeps the latest output, up to 5 MiB. On overflow it trims to roughly 4 MiB so runaway output cannot grow without bound.
+- A session retains at most 16 live processes and 32 total process records. Stop live work or run `process clear` before starting more.
 - Use `output` and `logs` when the user asks, when debugging, or when investigating a specific problem.
 
 ### Killing processes

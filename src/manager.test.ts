@@ -404,6 +404,29 @@ describe("ProcessManager", () => {
     expect(manager.list()).toEqual([]);
   });
 
+  it("bounds concurrently live processes", () => {
+    for (let index = 0; index < 16; index++) {
+      manager.start(`process-${index}`, "sleep 60", process.cwd());
+    }
+
+    expect(() =>
+      manager.start("one-too-many", "sleep 60", process.cwd()),
+    ).toThrow("Live process limit reached (16)");
+    expect(children).toHaveLength(16);
+  });
+
+  it("bounds retained process records", () => {
+    for (let index = 0; index < 32; index++) {
+      manager.start(`process-${index}`, "true", process.cwd());
+      children[index].emit("close", 0, null);
+    }
+
+    expect(() => manager.start("one-too-many", "true", process.cwd())).toThrow(
+      "Process record limit reached (32)",
+    );
+    expect(children).toHaveLength(32);
+  });
+
   it("uses private, independent log directories", () => {
     const otherManager = new ProcessManager();
 
