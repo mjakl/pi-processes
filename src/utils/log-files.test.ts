@@ -38,6 +38,18 @@ describe("log file helpers", () => {
     expect(content).toBe("old-4\nnew-1\nnew-2\nnew-3\n");
   });
 
+  it("keeps a complete first retained line at an existing boundary", () => {
+    const log = new BoundedLogFile(filePath, {
+      maxBytes: 15,
+      retainBytes: 12,
+    });
+    log.append("old\n");
+
+    log.append("line1\nline2\n");
+
+    expect(readFileSync(filePath, "utf8")).toBe("line1\nline2\n");
+  });
+
   it("keeps only the tail of a single oversized append", () => {
     const log = new BoundedLogFile(filePath, {
       maxBytes: 20,
@@ -69,9 +81,10 @@ describe("log file helpers", () => {
 
     expect(readTailLines(filePath, 2, 64)).toEqual(["second🔥", "third"]);
     expect(readTailLines(filePath, 0, 64)).toEqual([]);
+    expect(readTailLines(join(dir, "missing.log"), 2, 64)).toBeNull();
 
     writeFileSync(filePath, "x".repeat(256));
-    expect(readTailLines(filePath, 1, 32)[0]).toMatch(/^\[…\] /);
+    expect(readTailLines(filePath, 1, 32)?.[0]).toMatch(/^\[…\] /);
   });
 
   it("flushes bounded segments for long unterminated combined lines", () => {

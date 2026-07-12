@@ -29,34 +29,33 @@ interface CombinedStreamState {
 
 export class BoundedLogFile {
   private size: number;
+  private fd: number | null;
 
   constructor(
     private readonly filePath: string,
     private readonly options: BoundedLogOptions,
   ) {
     this.size = statSync(filePath).size;
+    this.fd = openSync(filePath, "a");
   }
 
   append(data: string | Buffer): void {
     const input = typeof data === "string" ? Buffer.from(data) : data;
     if (input.length === 0) return;
 
+    if (this.fd === null) throw new Error("Log file is closed");
+
     if (this.size + input.length <= this.options.maxBytes) {
-      const fd = openSync(this.filePath, "a");
-      try {
-        let offset = 0;
-        while (offset < input.length) {
-          const bytesWritten = writeSync(
-            fd,
-            input,
-            offset,
-            input.length - offset,
-          );
-          if (bytesWritten === 0) throw new Error("Unable to append log data");
-          offset += bytesWritten;
-        }
-      } finally {
-        closeSync(fd);
+      let offset = 0;
+      while (offset < input.length) {
+        const bytesWritten = writeSync(
+          this.fd,
+          input,
+          offset,
+          input.length - offset,
+        );
+        if (bytesWritten === 0) throw new Error("Unable to append log data");
+        offset += bytesWritten;
       }
       this.size += input.length;
       return;
@@ -66,28 +65,47 @@ export class BoundedLogFile {
       this.options.maxBytes,
       this.options.retainBytes,
     );
-    const inputTail = input.subarray(Math.max(0, input.length - retainBytes));
+    const inputStart = Math.max(0, input.length - retainBytes);
+    const inputTail = input.subarray(inputStart);
     const existingBytes = Math.max(0, retainBytes - inputTail.length);
+    const existingStart = Math.max(0, this.size - existingBytes);
     const existingTail = readFileTail(this.filePath, existingBytes, this.size);
     let replacement = Buffer.concat([existingTail, inputTail]);
 
-    // When possible, begin at a complete line after trimming old bytes.
-    const firstNewline = replacement.indexOf(0x0a);
-    if (firstNewline >= 0 && firstNewline < replacement.length - 1) {
-      replacement = replacement.subarray(firstNewline + 1);
-    } else {
-      const marker = Buffer.from(
-        this.options.truncationMarker ?? DEFAULT_TRUNCATION_MARKER,
-      );
-      const contentBytes = Math.max(0, retainBytes - marker.length);
-      replacement = Buffer.concat([
-        marker.subarray(0, retainBytes),
-        utf8SafeTail(replacement, contentBytes),
-      ]);
+    const startsAtLineBoundary =
+      existingBytes > 0
+        ? existingStart === 0 ||
+          readByteAt(this.filePath, existingStart - 1) === 0x0a
+        : inputStart > 0
+          ? input[inputStart - 1] === 0x0a
+          : this.size === 0 ||
+            readByteAt(this.filePath, this.size - 1) === 0x0a;
+
+    if (!startsAtLineBoundary) {
+      // When possible, begin at a complete line after trimming old bytes.
+      const firstNewline = replacement.indexOf(0x0a);
+      if (firstNewline >= 0 && firstNewline < replacement.length - 1) {
+        replacement = replacement.subarray(firstNewline + 1);
+      } else {
+        const marker = Buffer.from(
+          this.options.truncationMarker ?? DEFAULT_TRUNCATION_MARKER,
+        );
+        const contentBytes = Math.max(0, retainBytes - marker.length);
+        replacement = Buffer.concat([
+          marker.subarray(0, retainBytes),
+          utf8SafeTail(replacement, contentBytes),
+        ]);
+      }
     }
 
     writeFileSync(this.filePath, replacement, { mode: 0o600 });
     this.size = replacement.length;
+  }
+
+  close(): void {
+    if (this.fd === null) return;
+    closeSync(this.fd);
+    this.fd = null;
   }
 }
 
@@ -116,6 +134,15 @@ export class CombinedLogWriter {
     if (state.ended) return;
     state.ended = true;
     this.appendText(stream, state.decoder.end(), true);
+    if (this.streams.stdout.ended && this.streams.stderr.ended) {
+      this.output.close();
+    }
+  }
+
+  close(): void {
+    this.end("stdout");
+    this.end("stderr");
+    this.output.close();
   }
 
   private appendText(
@@ -152,7 +179,7 @@ export function readTailLines(
   filePath: string,
   lineLimit: number,
   byteLimit: number,
-): string[] {
+): string[] | null {
   const maxLines = Math.max(0, Math.floor(lineLimit));
   const maxBytes = Math.max(0, Math.floor(byteLimit));
   if (maxLines === 0 || maxBytes === 0) return [];
@@ -204,7 +231,7 @@ export function readTailLines(
     }
     return lines.slice(-maxLines);
   } catch {
-    return [];
+    return null;
   } finally {
     if (fd !== null) closeSync(fd);
   }
@@ -234,6 +261,17 @@ function readFileTail(
       offset += bytesRead;
     }
     return buffer.subarray(0, offset);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function readByteAt(filePath: string, position: number): number | undefined {
+  if (position < 0) return undefined;
+  const buffer = Buffer.allocUnsafe(1);
+  const fd = openSync(filePath, "r");
+  try {
+    return readSync(fd, buffer, 0, 1, position) === 1 ? buffer[0] : undefined;
   } finally {
     closeSync(fd);
   }

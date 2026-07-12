@@ -135,5 +135,8 @@ describe("LogFileViewer", () => {
 
     writeFileSync(filePath, "1:other\n");
     expect(viewer.renderLines(80, 10)).toEqual(["other"]);
+
+    writeFileSync(filePath, "1:larger-one\n1:larger-two\n");
+    expect(viewer.renderLines(80, 10)).toEqual(["larger-one", "larger-two"]);
   });
 });

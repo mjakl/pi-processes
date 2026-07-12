@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -345,6 +345,13 @@ describe("ProcessManager", () => {
     }
   });
 
+  it("reports missing log files instead of treating them as empty", () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    rmSync(proc.stdoutFile);
+
+    expect(manager.getOutput(proc.id)).toBeNull();
+  });
+
   it("preserves combined lines and UTF-8 across stream chunks", () => {
     const proc = manager.start("server", "pnpm dev", process.cwd());
     const emoji = Buffer.from("🔥");
@@ -428,6 +435,9 @@ describe("ProcessManager", () => {
 
     children[0].emit("error", new Error("process error"));
     expect(manager.get(proc.id)?.status).toBe("running");
+    expect(manager.getCombinedOutput(proc.id)).toEqual([
+      { type: "stderr", text: "Process error: process error" },
+    ]);
 
     children[0].emit("close", null, null);
     expect(manager.get(proc.id)).toMatchObject({

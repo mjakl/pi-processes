@@ -28,6 +28,7 @@ interface ManagedProcess extends ProcessInfo {
   leaderExitSignal: NodeJS.Signals | null;
   processError: boolean;
   closeWaiters: Set<() => void>;
+  closeLogs: () => void;
 }
 
 interface ProcessManagerOptions {
@@ -175,9 +176,9 @@ export class ProcessManager {
     const stderrFile = join(logDir, `${id}-stderr.log`);
     const combinedFile = join(logDir, `${id}-combined.log`);
 
-    let stdoutLog: BoundedLogFile;
-    let stderrLog: BoundedLogFile;
-    let combinedLog: CombinedLogWriter;
+    let stdoutLog!: BoundedLogFile;
+    let stderrLog!: BoundedLogFile;
+    let combinedLog!: CombinedLogWriter;
     try {
       appendFileSync(stdoutFile, "", { mode: 0o600 });
       appendFileSync(stderrFile, "", { mode: 0o600 });
@@ -186,14 +187,40 @@ export class ProcessManager {
       stderrLog = new BoundedLogFile(stderrFile, LOG_FILE_OPTIONS);
       combinedLog = new CombinedLogWriter(combinedFile, LOG_FILE_OPTIONS);
     } catch (error) {
+      try {
+        stdoutLog?.close();
+        stderrLog?.close();
+        combinedLog?.close();
+      } catch {
+        // Continue cleaning up any files created before the failure.
+      }
       this.removeProcessLogFiles(stdoutFile, stderrFile, combinedFile);
       throw error;
     }
+
+    const closeLogWriters = () => {
+      try {
+        stdoutLog.close();
+      } catch {
+        // Ignore log close failures
+      }
+      try {
+        stderrLog.close();
+      } catch {
+        // Ignore log close failures
+      }
+      try {
+        combinedLog.close();
+      } catch {
+        // Ignore log close failures
+      }
+    };
 
     let child: ReturnType<typeof spawnCommand>;
     try {
       child = spawnCommand(command, cwd, this.getConfiguredShellPath());
     } catch (error) {
+      closeLogWriters();
       this.removeProcessLogFiles(stdoutFile, stderrFile, combinedFile);
       throw error;
     }
@@ -220,15 +247,20 @@ export class ProcessManager {
       leaderExitSignal: null,
       processError: false,
       closeWaiters: new Set(),
+      closeLogs: closeLogWriters,
     };
 
     child.stdout?.on("data", (data: Buffer) => {
       if (!trackingStarted) return;
       try {
         stdoutLog.append(data);
+      } catch {
+        // Preserve the independent combined copy when possible.
+      }
+      try {
         combinedLog.write("stdout", data);
       } catch {
-        // Ignore log write failures
+        // Preserve the independent stdout copy when possible.
       }
     });
     child.stdout?.on("end", () => {
@@ -238,15 +270,24 @@ export class ProcessManager {
       } catch {
         // Ignore log write failures
       }
+      try {
+        stdoutLog.close();
+      } catch {
+        // Ignore log close failures
+      }
     });
 
     child.stderr?.on("data", (data: Buffer) => {
       if (!trackingStarted) return;
       try {
         stderrLog.append(data);
+      } catch {
+        // Preserve the independent combined copy when possible.
+      }
+      try {
         combinedLog.write("stderr", data);
       } catch {
-        // Ignore log write failures
+        // Preserve the independent stderr copy when possible.
       }
     });
     child.stderr?.on("end", () => {
@@ -256,17 +297,17 @@ export class ProcessManager {
       } catch {
         // Ignore log write failures
       }
+      try {
+        stderrLog.close();
+      } catch {
+        // Ignore log close failures
+      }
     });
 
     child.on("close", (code, signal) => {
       if (!trackingStarted || managed.leaderClosed) return;
 
-      try {
-        combinedLog.end("stdout");
-        combinedLog.end("stderr");
-      } catch {
-        // Ignore log write failures
-      }
+      managed.closeLogs();
       managed.leaderClosed = true;
       managed.leaderExitCode = code ?? (managed.processError ? -1 : null);
       managed.leaderExitSignal = signal;
@@ -277,10 +318,16 @@ export class ProcessManager {
 
     child.on("error", (err) => {
       if (!trackingStarted) return;
+      const message = `Process error: ${err.message}\n`;
       try {
-        stderrLog.append(`Process error: ${err.message}\n`);
+        stderrLog.append(message);
       } catch {
-        // Ignore log write failures
+        // Preserve the independent combined copy when possible.
+      }
+      try {
+        combinedLog.write("stderr", Buffer.from(message));
+      } catch {
+        // Preserve the independent stderr copy when possible.
       }
       managed.processError = true;
     });
@@ -289,6 +336,7 @@ export class ProcessManager {
       managed.exitCode = -1;
       managed.success = false;
       managed.endTime = Date.now();
+      closeLogWriters();
       this.removeProcessLogFiles(stdoutFile, stderrFile, combinedFile);
       throw new Error("Failed to spawn process: no process ID was assigned");
     }
@@ -342,9 +390,13 @@ export class ProcessManager {
     const managed = this.processes.get(id);
     if (!managed) return null;
 
+    const stdout = this.readTailLines(managed.stdoutFile, tailLines);
+    const stderr = this.readTailLines(managed.stderrFile, tailLines);
+    if (!stdout || !stderr) return null;
+
     return {
-      stdout: this.readTailLines(managed.stdoutFile, tailLines),
-      stderr: this.readTailLines(managed.stderrFile, tailLines),
+      stdout,
+      stderr,
       status: managed.status,
     };
   }
@@ -357,6 +409,7 @@ export class ProcessManager {
     if (!managed) return null;
 
     const rawLines = this.readTailLines(managed.combinedFile, tailLines);
+    if (!rawLines) return null;
     return rawLines.map((line) => {
       if (line.startsWith("2:")) {
         return { type: "stderr", text: line.slice(2) };
@@ -575,6 +628,7 @@ export class ProcessManager {
         continue;
       }
 
+      managed.closeLogs();
       try {
         rmSync(managed.stdoutFile, { force: true });
         rmSync(managed.stderrFile, { force: true });
@@ -619,6 +673,7 @@ export class ProcessManager {
     this.stopWatcher();
     this.events.removeAllListeners("event");
     this.shutdownKillAll();
+    for (const managed of this.processes.values()) managed.closeLogs();
 
     if (this.logDir) {
       try {
@@ -630,7 +685,7 @@ export class ProcessManager {
     }
   }
 
-  private readTailLines(filePath: string, lines: number): string[] {
+  private readTailLines(filePath: string, lines: number): string[] | null {
     return readLogTailLines(filePath, lines, TAIL_READ_MAX_BYTES);
   }
 

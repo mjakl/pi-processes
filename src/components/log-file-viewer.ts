@@ -20,6 +20,7 @@ interface LineCache {
   lines: ParsedLine[];
   pending: string;
   decoder: StringDecoder;
+  endFingerprint: Buffer;
   skipLeadingContinuation: boolean;
   skipLeadingPartialLine: boolean;
 }
@@ -57,6 +58,7 @@ export class LogFileViewer {
       lines: [],
       pending: "",
       decoder: new StringDecoder("utf8"),
+      endFingerprint: Buffer.alloc(0),
       skipLeadingContinuation: size > 0,
       skipLeadingPartialLine: size > 0,
     };
@@ -74,8 +76,13 @@ export class LogFileViewer {
       return [];
     }
 
+    const changedPrefix =
+      size > this.cache.size &&
+      mtimeNs !== this.cache.mtimeNs &&
+      !this.cachedPrefixStillMatches();
     if (
       size < this.cache.size ||
+      changedPrefix ||
       (size === this.cache.size && mtimeNs !== this.cache.mtimeNs)
     ) {
       this.resetCache();
@@ -104,6 +111,13 @@ export class LogFileViewer {
       this.cache.skipLeadingContinuation = false;
       this.cache.size += chunk.bytesRead;
       this.cache.mtimeNs = mtimeNs;
+      const fingerprintSource = Buffer.concat([
+        this.cache.endFingerprint,
+        chunk.content,
+      ]);
+      this.cache.endFingerprint = fingerprintSource.subarray(
+        Math.max(0, fingerprintSource.length - 64),
+      );
       this.appendChunk(chunk.content);
       return this.cache.lines;
     } catch {
@@ -114,6 +128,21 @@ export class LogFileViewer {
   private resetCache(): void {
     this.cache = this.newCache();
     this.anchorEnd = this.follow ? null : 0;
+  }
+
+  private cachedPrefixStillMatches(): boolean {
+    const expected = this.cache.endFingerprint;
+    if (expected.length === 0) return this.cache.size === 0;
+    try {
+      const actual = this.readRange(
+        this.cache.size - expected.length,
+        expected.length,
+        false,
+      ).content;
+      return actual.equals(expected);
+    } catch {
+      return false;
+    }
   }
 
   private readRange(
