@@ -30,6 +30,7 @@ export class ProcessManager {
   private logDir: string;
   private events = new EventEmitter();
   private watcher: ReturnType<typeof setInterval> | null = null;
+  private disposed = false;
   private getConfiguredShellPath: () => string | undefined;
 
   constructor(options?: ProcessManagerOptions) {
@@ -40,11 +41,13 @@ export class ProcessManager {
   }
 
   onEvent(listener: (event: ManagerEvent) => void): () => void {
+    if (this.disposed) return () => {};
     this.events.on("event", listener);
     return () => this.events.off("event", listener);
   }
 
   private emit(event: ManagerEvent): void {
+    if (this.disposed) return;
     this.events.emit("event", event);
   }
 
@@ -67,6 +70,7 @@ export class ProcessManager {
   }
 
   private ensureWatcherRunning(): void {
+    if (this.disposed) return;
     if (this.watcher) return;
     if (!this.hasAliveishProcesses()) return;
 
@@ -435,7 +439,10 @@ export class ProcessManager {
   }
 
   cleanup(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     this.stopWatcher();
+    this.events.removeAllListeners("event");
     this.shutdownKillAll();
 
     try {

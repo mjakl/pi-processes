@@ -34,14 +34,18 @@ class FakeChildProcess extends EventEmitter {
 describe("ProcessManager", () => {
   let manager: ProcessManager;
   let nextPid: number;
+  let children: FakeChildProcess[];
 
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
     nextPid = 1000;
-    mocks.spawnCommand.mockImplementation(
-      () => new FakeChildProcess(nextPid++),
-    );
+    children = [];
+    mocks.spawnCommand.mockImplementation(() => {
+      const child = new FakeChildProcess(nextPid++);
+      children.push(child);
+      return child;
+    });
     mocks.isProcessGroupAlive.mockReturnValue(false);
     manager = new ProcessManager();
   });
@@ -161,6 +165,28 @@ describe("ProcessManager", () => {
       triggerAgentTurn: true,
       info: { id: proc.id, status: "killed" },
     });
+  });
+
+  it("does not emit or restart its watcher for delayed child events after cleanup", () => {
+    manager.start("server", "pnpm dev", process.cwd());
+    manager.start("tests", "pnpm test --watch", process.cwd());
+    const listener = vi.fn();
+    manager.onEvent(listener);
+
+    manager.cleanup();
+
+    expect(children).toHaveLength(2);
+    expect(() => children[0].emit("close", null, "SIGKILL")).not.toThrow();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(() =>
+      children[1].emit("error", new Error("late process error")),
+    ).not.toThrow();
+    expect(listener).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(mocks.killProcessGroup).toHaveBeenCalledTimes(2);
+
+    manager.cleanup();
+    expect(mocks.killProcessGroup).toHaveBeenCalledTimes(2);
   });
 
   it("resolves only exact ids or exact names and reports ambiguity", () => {
