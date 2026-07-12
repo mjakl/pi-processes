@@ -1,3 +1,4 @@
+import { StringEnum } from "@earendil-works/pi-ai";
 import type {
   AgentToolResult,
   ExtensionAPI,
@@ -18,51 +19,154 @@ import {
 import { executeAction } from "./actions";
 import { ToolBody, ToolCallHeader, ToolFooter } from "./tool-rendering";
 
-const ProcessesParams = Type.Object({
-  action: Type.Union(
-    [
-      Type.Literal("start"),
-      Type.Literal("list"),
-      Type.Literal("output"),
-      Type.Literal("logs"),
-      Type.Literal("kill"),
-      Type.Literal("clear"),
-    ],
-    {
+const PROCESS_ACTIONS = [
+  "start",
+  "list",
+  "output",
+  "logs",
+  "kill",
+  "clear",
+] as const;
+
+const ProcessesParams = Type.Object(
+  {
+    action: StringEnum(PROCESS_ACTIONS, {
       description:
         "Action: start (run command), list (show all), output (get recent output), logs (get log file paths), kill (terminate or force-kill), clear (remove finished)",
-    },
-  ),
-  command: Type.Optional(
-    Type.String({ description: "Command to run (required for start)" }),
-  ),
-  name: Type.Optional(
-    Type.String({
-      description:
-        "Friendly name for the process (required for start, e.g. 'backend-dev', 'test-runner')",
     }),
-  ),
-  id: Type.Optional(
-    Type.String({
-      description:
-        "Exact process ID or exact friendly name to match (required for output/kill/logs).",
-    }),
-  ),
-  force: Type.Optional(
-    Type.Boolean({
-      description:
-        "Force-kill the process with SIGKILL for kill action. Use after a normal terminate times out, or when you need an immediate hard stop.",
-    }),
-  ),
-  continueAfterStart: Type.Optional(
-    Type.Boolean({
-      description:
-        "For start only. Leave unset/false when the next step is to wait for process completion; process start will end this agent turn and the extension will resume you on exit. Set true only when you have immediate, specific, non-polling work to do after starting.",
-    }),
-  ),
-});
+    command: Type.Optional(
+      Type.String({
+        description: "Command to run (required for start)",
+        minLength: 1,
+        maxLength: 20_000,
+      }),
+    ),
+    name: Type.Optional(
+      Type.String({
+        description:
+          "Friendly name for the process (required for start, e.g. 'backend-dev', 'test-runner')",
+        minLength: 1,
+        maxLength: 120,
+      }),
+    ),
+    id: Type.Optional(
+      Type.String({
+        description:
+          "Exact process ID or exact friendly name to match (required for output/kill/logs).",
+        minLength: 1,
+        maxLength: 120,
+      }),
+    ),
+    force: Type.Optional(
+      Type.Boolean({
+        description:
+          "Force-kill the process with SIGKILL for kill action. Use after a normal terminate times out, or when you need an immediate hard stop.",
+      }),
+    ),
+    continueAfterStart: Type.Optional(
+      Type.Boolean({
+        description:
+          "For start only. Leave unset/false when the next step is to wait for process completion; process start will end this agent turn and the extension will resume you on exit. Set true only when you have immediate, specific, non-polling work to do after starting.",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
 
 type ProcessesParamsType = Static<typeof ProcessesParams>;
+type ProcessAction = (typeof PROCESS_ACTIONS)[number];
+type OptionalParam = "command" | "name" | "id" | "force" | "continueAfterStart";
+
+const ALLOWED_PARAMS: Record<ProcessAction, ReadonlySet<OptionalParam>> = {
+  start: new Set(["command", "name", "continueAfterStart"]),
+  list: new Set(),
+  output: new Set(["id"]),
+  logs: new Set(["id"]),
+  kill: new Set(["id", "force"]),
+  clear: new Set(),
+};
+const OPTIONAL_PARAMS: OptionalParam[] = [
+  "command",
+  "name",
+  "id",
+  "force",
+  "continueAfterStart",
+];
+
+function validateParams(params: ProcessesParamsType): void {
+  if (!PROCESS_ACTIONS.includes(params.action)) {
+    throw new Error(
+      `Unknown process action: ${sanitizeLine(String(params.action))}`,
+    );
+  }
+
+  for (const field of Object.keys(params)) {
+    if (
+      field !== "action" &&
+      !OPTIONAL_PARAMS.includes(field as OptionalParam)
+    ) {
+      throw new Error(`Unknown process parameter: ${sanitizeLine(field)}`);
+    }
+  }
+
+  const allowed = ALLOWED_PARAMS[params.action];
+  for (const field of OPTIONAL_PARAMS) {
+    if (params[field] !== undefined && !allowed.has(field)) {
+      throw new Error(`Parameter "${field}" is not valid for ${params.action}`);
+    }
+  }
+
+  validateOptionalText(params.name, "name", 120);
+  validateOptionalText(params.command, "command", 20_000);
+  validateOptionalText(params.id, "id", 120);
+  if (params.force !== undefined && typeof params.force !== "boolean") {
+    throw new Error('Parameter "force" must be a boolean');
+  }
+  if (
+    params.continueAfterStart !== undefined &&
+    typeof params.continueAfterStart !== "boolean"
+  ) {
+    throw new Error('Parameter "continueAfterStart" must be a boolean');
+  }
+
+  if (params.action === "start") {
+    requireText(params.name, "name");
+    requireText(params.command, "command");
+  }
+  if (
+    params.action === "output" ||
+    params.action === "logs" ||
+    params.action === "kill"
+  ) {
+    requireText(params.id, "id");
+  }
+}
+
+function validateOptionalText(
+  value: unknown,
+  field: string,
+  maxLength: number,
+): void {
+  if (value === undefined) return;
+  if (typeof value !== "string" || value.length > maxLength) {
+    throw new Error(
+      `Parameter "${field}" must be a string no longer than ${maxLength} characters`,
+    );
+  }
+}
+
+function requireText(value: string | undefined, field: string): void {
+  if (!value?.trim()) {
+    throw new Error(`Missing required parameter: ${field}`);
+  }
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const error = new Error("Process action cancelled");
+  error.name = "AbortError";
+  throw error;
+}
 
 export function setupProcessesTools(pi: ExtensionAPI, manager: ProcessManager) {
   pi.registerTool<typeof ProcessesParams, ProcessesDetails>({
@@ -95,8 +199,14 @@ Preferred pattern: start the process once, let the turn stop, and resume from th
 
     parameters: ProcessesParams,
 
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      return executeAction(params, manager, ctx);
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      throwIfAborted(signal);
+      validateParams(params);
+      const result = await executeAction(params, manager, ctx, signal);
+      if (!result.details.success) {
+        throw new Error(sanitizeLine(result.details.message));
+      }
+      return result;
     },
 
     renderCall(args: ProcessesParamsType, theme: Theme) {
@@ -191,7 +301,11 @@ Preferred pattern: start the process once, let the turn stop, and resume from th
         });
       } else if (details.action === "output" && details.output) {
         const lines: string[] = [theme.fg("muted", details.message)];
-        let hadAnsi = false;
+        let hadAnsi = details.output.hadAnsi ?? false;
+        const stdoutTotal =
+          details.output.stdoutTotal ?? details.output.stdout.length;
+        const stderrTotal =
+          details.output.stderrTotal ?? details.output.stderr.length;
 
         if (details.output.stdout.length > 0) {
           lines.push("", theme.fg("accent", "stdout:"));
@@ -199,12 +313,10 @@ Preferred pattern: start the process once, let the turn stop, and resume from th
             if (!hadAnsi && hasAnsi(line)) hadAnsi = true;
             lines.push(sanitizeLine(line));
           }
-          if (details.output.stdout.length > 20) {
+          const omitted = stdoutTotal - details.output.stdout.length;
+          if (omitted > 0) {
             lines.push(
-              theme.fg(
-                "muted",
-                `... (${details.output.stdout.length - 20} more lines)`,
-              ),
+              theme.fg("muted", `... (${omitted} earlier lines omitted)`),
             );
           }
         }
@@ -215,12 +327,10 @@ Preferred pattern: start the process once, let the turn stop, and resume from th
             if (!hadAnsi && hasAnsi(line)) hadAnsi = true;
             lines.push(theme.fg("warning", sanitizeLine(line)));
           }
-          if (details.output.stderr.length > 10) {
+          const omitted = stderrTotal - details.output.stderr.length;
+          if (omitted > 0) {
             lines.push(
-              theme.fg(
-                "muted",
-                `... (${details.output.stderr.length - 10} more lines)`,
-              ),
+              theme.fg("muted", `... (${omitted} earlier lines omitted)`),
             );
           }
         }
@@ -255,9 +365,13 @@ Preferred pattern: start the process once, let the turn stop, and resume from th
         details.processes &&
         details.processes.length > 0
       ) {
-        const lines: string[] = [
-          theme.fg("success", `${details.processes.length} process(es):`),
-        ];
+        const totalProcesses =
+          details.totalProcesses ?? details.processes.length;
+        const listHeading =
+          totalProcesses === details.processes.length
+            ? `${details.processes.length} process(es):`
+            : `Showing ${details.processes.length} of ${totalProcesses} process(es):`;
+        const lines: string[] = [theme.fg("success", listHeading)];
 
         for (const process of details.processes) {
           let status: string;
@@ -306,8 +420,8 @@ Preferred pattern: start the process once, let the turn stop, and resume from th
           })
           .join(", ");
         const more =
-          details.processes.length > 3
-            ? theme.fg("muted", ` +${details.processes.length - 3} more`)
+          totalProcesses > 3
+            ? theme.fg("muted", ` +${totalProcesses - 3} more`)
             : "";
         fields.push({
           label: "Processes",

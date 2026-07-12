@@ -8,7 +8,7 @@ interface KillParams {
 }
 
 function notFoundResult(id: string): ExecuteResult {
-  const message = `Process not found: ${id}`;
+  const message = `Process not found: ${sanitizeLine(id)}`;
   return {
     content: [{ type: "text", text: message }],
     details: {
@@ -27,7 +27,7 @@ function ambiguousResult(
     .map((match) => `${match.id} ("${sanitizeLine(match.name)}")`)
     .join(", ");
   const message =
-    `Process name is ambiguous: ${id}. ` +
+    `Process name is ambiguous: ${sanitizeLine(id)}. ` +
     `Use an exact process ID instead. Matches: ${choices}`;
   return {
     content: [{ type: "text", text: message }],
@@ -42,6 +42,7 @@ function ambiguousResult(
 export async function executeKill(
   params: KillParams,
   manager: ProcessManager,
+  abortSignal?: AbortSignal,
 ): Promise<ExecuteResult> {
   if (!params.id) {
     return {
@@ -77,7 +78,11 @@ export async function executeKill(
   const force = params.force ?? false;
   const signal = force ? "SIGKILL" : "SIGTERM";
   const timeoutMs = force ? 200 : 3000;
-  const result = await manager.kill(proc.id, { signal, timeoutMs });
+  const result = await manager.kill(proc.id, {
+    signal,
+    timeoutMs,
+    ...(abortSignal ? { abortSignal } : {}),
+  });
 
   if (result.ok) {
     const verb = force ? "Force-killed" : "Terminated";
@@ -87,6 +92,18 @@ export async function executeKill(
       details: {
         action: "kill",
         success: true,
+        message,
+      },
+    };
+  }
+
+  if (result.reason === "cancelled") {
+    const message = `Kill cancelled for "${sanitizeLine(proc.name)}" (${proc.id})`;
+    return {
+      content: [{ type: "text", text: message }],
+      details: {
+        action: "kill",
+        success: false,
         message,
       },
     };

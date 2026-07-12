@@ -5,7 +5,7 @@ import {
   type ResolveProcessResult,
 } from "../../constants";
 import type { ProcessManager } from "../../manager";
-import { formatStatus, sanitizeLine } from "../../utils";
+import { formatStatus, hasAnsi, sanitizeLine, truncateCmd } from "../../utils";
 
 const MAX_BYTES = 50 * 1024; // 50KB
 
@@ -25,7 +25,7 @@ function resolveProcessResult(
       .map((match) => `${match.id} ("${sanitizeLine(match.name)}")`)
       .join(", ");
     const message =
-      `Process name is ambiguous: ${id}. ` +
+      `Process name is ambiguous: ${sanitizeLine(id)}. ` +
       `Use an exact process ID instead. Matches: ${choices}`;
     return {
       content: [{ type: "text", text: message }],
@@ -37,7 +37,7 @@ function resolveProcessResult(
     };
   }
 
-  const message = `Process not found: ${id}`;
+  const message = `Process not found: ${sanitizeLine(id)}`;
   return {
     content: [{ type: "text", text: message }],
     details: {
@@ -110,13 +110,26 @@ export function executeOutput(
   const { maxOutputLines } = configLoader.getConfig().output;
   const contentText = truncateTail(fullText, logFiles, maxOutputLines);
 
+  const outputPreview = {
+    status: output.status,
+    stdoutTotal: output.stdout.length,
+    stderrTotal: output.stderr.length,
+    hadAnsi: [...output.stdout, ...output.stderr].some(hasAnsi),
+    stdout: output.stdout
+      .slice(-20)
+      .map((line) => truncateCmd(sanitizeLine(line), 1000)),
+    stderr: output.stderr
+      .slice(-10)
+      .map((line) => truncateCmd(sanitizeLine(line), 1000)),
+  };
+
   return {
     content: [{ type: "text", text: contentText }],
     details: {
       action: "output",
       success: true,
       message,
-      output,
+      output: outputPreview,
     },
   };
 }
@@ -143,40 +156,55 @@ function truncateTail(
     return text;
   }
 
-  // Work backwards, collecting lines that fit
-  const kept: string[] = [];
-  let keptBytes = 0;
-  let hitBytes = false;
+  const contentLineLimit = Math.max(0, maxLines - 1);
+  const kept = contentLineLimit === 0 ? [] : lines.slice(-contentLineLimit);
+  let hitBytes = totalBytes > MAX_BYTES;
+  let notice = buildTruncationNotice(
+    kept.length,
+    totalLines,
+    hitBytes,
+    logFiles,
+  );
 
-  for (let i = lines.length - 1; i >= 0 && kept.length < maxLines; i--) {
-    const line = lines[i] ?? "";
-    const lineBytes =
-      Buffer.byteLength(line, "utf-8") + (kept.length > 0 ? 1 : 0);
-
-    if (keptBytes + lineBytes > MAX_BYTES) {
-      hitBytes = true;
-      break;
-    }
-
-    kept.unshift(line);
-    keptBytes += lineBytes;
+  while (kept.length > 0) {
+    const candidate = `${kept.join("\n")}\n${notice}`;
+    if (Buffer.byteLength(candidate, "utf8") <= MAX_BYTES) return candidate;
+    kept.shift();
+    hitBytes = true;
+    notice = buildTruncationNotice(kept.length, totalLines, hitBytes, logFiles);
   }
 
-  let result = kept.join("\n");
+  return truncateUtf8(notice, MAX_BYTES);
+}
 
-  // Append a notice so the agent knows output was truncated
-  const shownLines = kept.length;
-  const startLine = totalLines - shownLines + 1;
+function buildTruncationNotice(
+  shownLines: number,
+  totalLines: number,
+  hitBytes: boolean,
+  logFiles: {
+    stdoutFile: string;
+    stderrFile: string;
+    combinedFile: string;
+  } | null,
+): string {
   const sizeNote = hitBytes ? ` (${formatSize(MAX_BYTES)} limit)` : "";
-  result += `\n\n[Showing lines ${startLine}-${totalLines} of ${totalLines}${sizeNote}.`;
-
+  const range =
+    shownLines > 0
+      ? `Showing lines ${totalLines - shownLines + 1}-${totalLines} of ${totalLines}`
+      : `Output omitted; ${totalLines} lines total`;
+  let notice = `[${range}${sizeNote}.`;
   if (logFiles) {
-    result += ` Full logs: ${logFiles.stdoutFile} , ${logFiles.stderrFile}`;
+    notice += ` Retained logs: ${logFiles.stdoutFile} , ${logFiles.stderrFile}`;
   }
+  return `${notice}]`;
+}
 
-  result += "]";
-
-  return result;
+function truncateUtf8(value: string, maxBytes: number): string {
+  const buffer = Buffer.from(value);
+  if (buffer.length <= maxBytes) return value;
+  let end = maxBytes;
+  while (end > 0 && (buffer[end] & 0xc0) === 0x80) end--;
+  return buffer.subarray(0, end).toString("utf8");
 }
 
 function formatSize(bytes: number): string {

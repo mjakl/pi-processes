@@ -14,7 +14,7 @@ export function executeStart(
   manager: ProcessManager,
   ctx: ExtensionContext,
 ): ExecuteResult {
-  if (!params.name) {
+  if (!params.name?.trim()) {
     return {
       content: [{ type: "text", text: "Missing required parameter: name" }],
       details: {
@@ -24,7 +24,7 @@ export function executeStart(
       },
     };
   }
-  if (!params.command) {
+  if (!params.command?.trim()) {
     return {
       content: [{ type: "text", text: "Missing required parameter: command" }],
       details: {
@@ -36,7 +36,7 @@ export function executeStart(
   }
 
   try {
-    const proc = manager.start(params.name, params.command, ctx.cwd);
+    const proc = manager.start(params.name.trim(), params.command, ctx.cwd);
     if (proc.pid <= 0 || proc.status !== "running") {
       const message = "Failed to start process: process exited during startup";
       return {
@@ -69,7 +69,7 @@ export function executeStart(
   } catch (error) {
     const message =
       error instanceof Error
-        ? `Failed to start process: ${error.message}`
+        ? `Failed to start process: ${sanitizeLine(error.message)}`
         : "Failed to start process";
 
     return {

@@ -27,6 +27,35 @@ describe("executeKill", () => {
     expect(result.details.message).toContain("Force-killed");
   });
 
+  it("passes cancellation through to the manager", async () => {
+    const controller = new AbortController();
+    const manager = {
+      resolve: vi.fn().mockReturnValue({
+        ok: true,
+        info: { id: "proc_1", name: "server", status: "running" },
+      }),
+      kill: vi.fn().mockResolvedValue({
+        ok: false,
+        reason: "cancelled",
+        info: { id: "proc_1", name: "server", status: "terminating" },
+      }),
+    } as const;
+
+    const result = await executeKill(
+      { id: "proc_1" },
+      manager as never,
+      controller.signal,
+    );
+
+    expect(manager.kill).toHaveBeenCalledWith("proc_1", {
+      signal: "SIGTERM",
+      timeoutMs: 3000,
+      abortSignal: controller.signal,
+    });
+    expect(result.details.success).toBe(false);
+    expect(result.details.message).toContain("cancelled");
+  });
+
   it("reports an already-finished process without signaling it", async () => {
     const manager = {
       resolve: vi.fn().mockReturnValue({

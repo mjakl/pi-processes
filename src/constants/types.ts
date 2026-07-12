@@ -52,8 +52,16 @@ export interface ProcessesDetails {
   message: string;
   process?: ProcessInfo;
   processes?: ProcessInfo[];
-  output?: { stdout: string[]; stderr: string[]; status: string };
+  output?: {
+    stdout: string[];
+    stderr: string[];
+    status: string;
+    stdoutTotal?: number;
+    stderrTotal?: number;
+    hadAnsi?: boolean;
+  };
   logFiles?: { stdoutFile: string; stderrFile: string; combinedFile: string };
+  totalProcesses?: number;
   cleared?: number;
 }
 

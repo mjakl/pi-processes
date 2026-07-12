@@ -7,10 +7,12 @@ import {
   truncateCmd,
 } from "../../utils";
 
-export function executeList(manager: ProcessManager): ExecuteResult {
-  const processes = manager.list();
+const MAX_LISTED_PROCESSES = 100;
 
-  if (processes.length === 0) {
+export function executeList(manager: ProcessManager): ExecuteResult {
+  const allProcesses = manager.list();
+
+  if (allProcesses.length === 0) {
     return {
       content: [{ type: "text", text: "No background processes running" }],
       details: {
@@ -22,6 +24,14 @@ export function executeList(manager: ProcessManager): ExecuteResult {
     };
   }
 
+  const processes = allProcesses
+    .slice(0, MAX_LISTED_PROCESSES)
+    .map((process) => ({
+      ...process,
+      name: truncateCmd(process.name, 120),
+      command: truncateCmd(process.command, 500),
+      cwd: truncateCmd(process.cwd, 500),
+    }));
   const summary = processes
     .map(
       (p) =>
@@ -29,13 +39,17 @@ export function executeList(manager: ProcessManager): ExecuteResult {
     )
     .join("\n");
 
-  const hasLiveProcess = processes.some((process) =>
+  const hasLiveProcess = allProcesses.some((process) =>
     LIVE_STATUSES.has(process.status),
   );
   const waitNotice = hasLiveProcess
     ? "\n\nActive processes notify automatically on exit. Do not call process list/output/logs repeatedly just to wait."
     : "";
-  const message = `${processes.length} process(es):\n${summary}${waitNotice}`;
+  const count =
+    processes.length === allProcesses.length
+      ? `${processes.length} process(es)`
+      : `Showing ${processes.length} of ${allProcesses.length} process(es)`;
+  const message = `${count}:\n${summary}${waitNotice}`;
   return {
     content: [{ type: "text", text: message }],
     details: {
@@ -43,6 +57,7 @@ export function executeList(manager: ProcessManager): ExecuteResult {
       success: true,
       message,
       processes,
+      totalProcesses: allProcesses.length,
     },
   };
 }

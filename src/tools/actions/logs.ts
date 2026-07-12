@@ -28,7 +28,7 @@ export function executeLogs(
         .map((match) => `${match.id} ("${sanitizeLine(match.name)}")`)
         .join(", ");
       const message =
-        `Process name is ambiguous: ${params.id}. ` +
+        `Process name is ambiguous: ${sanitizeLine(params.id)}. ` +
         `Use an exact process ID instead. Matches: ${choices}`;
       return {
         content: [{ type: "text", text: message }],
@@ -40,7 +40,7 @@ export function executeLogs(
       };
     }
 
-    const message = `Process not found: ${params.id}`;
+    const message = `Process not found: ${sanitizeLine(params.id)}`;
     return {
       content: [{ type: "text", text: message }],
       details: {

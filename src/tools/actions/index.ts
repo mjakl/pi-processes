@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ExecuteResult } from "../../constants";
 import type { ProcessManager } from "../../manager";
+import { sanitizeLine } from "../../utils";
 import { executeClear } from "./clear";
 import { executeKill } from "./kill";
 import { executeList } from "./list";
@@ -21,6 +22,7 @@ export async function executeAction(
   params: ActionParams,
   manager: ProcessManager,
   ctx: ExtensionContext,
+  signal?: AbortSignal,
 ): Promise<ExecuteResult> {
   switch (params.action) {
     case "start":
@@ -32,17 +34,19 @@ export async function executeAction(
     case "logs":
       return executeLogs(params, manager);
     case "kill":
-      return executeKill(params, manager);
+      return executeKill(params, manager, signal);
     case "clear":
       return executeClear(manager);
-    default:
+    default: {
+      const action = sanitizeLine(params.action);
       return {
-        content: [{ type: "text", text: `Unknown action: ${params.action}` }],
+        content: [{ type: "text", text: `Unknown action: ${action}` }],
         details: {
-          action: params.action,
+          action,
           success: false,
-          message: `Unknown action: ${params.action}`,
+          message: `Unknown action: ${action}`,
         },
       };
+    }
   }
 }
