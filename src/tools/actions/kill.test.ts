@@ -6,7 +6,7 @@ describe("executeKill", () => {
     const manager = {
       resolve: vi.fn().mockReturnValue({
         ok: true,
-        info: { id: "proc_1", name: "server" },
+        info: { id: "proc_1", name: "server", status: "running" },
       }),
       kill: vi.fn().mockResolvedValue({
         ok: true,
@@ -25,6 +25,22 @@ describe("executeKill", () => {
     });
     expect(result.details.success).toBe(true);
     expect(result.details.message).toContain("Force-killed");
+  });
+
+  it("reports an already-finished process without signaling it", async () => {
+    const manager = {
+      resolve: vi.fn().mockReturnValue({
+        ok: true,
+        info: { id: "proc_1", name: "server", status: "exited" },
+      }),
+      kill: vi.fn(),
+    } as const;
+
+    const result = await executeKill({ id: "proc_1" }, manager as never);
+
+    expect(manager.kill).not.toHaveBeenCalled();
+    expect(result.details.success).toBe(true);
+    expect(result.details.message).toContain("already exited");
   });
 
   it("returns a clear error for ambiguous names", async () => {

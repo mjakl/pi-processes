@@ -315,12 +315,32 @@ export class ProcessManager {
     };
   }
 
+  private waitForGracePeriod(
+    milliseconds: number,
+    signal?: AbortSignal,
+  ): Promise<"elapsed" | "aborted"> {
+    if (signal?.aborted) return Promise.resolve("aborted");
+
+    return new Promise((resolve) => {
+      const finish = (result: "elapsed" | "aborted") => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        resolve(result);
+      };
+      const onAbort = () => finish("aborted");
+      const timer = setTimeout(() => finish("elapsed"), milliseconds);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
+    });
+  }
+
   async kill(
     id: string,
     opts?: {
       signal?: NodeJS.Signals;
       timeoutMs?: number;
       notifyOnEnd?: boolean;
+      abortSignal?: AbortSignal;
     },
   ): Promise<KillResult> {
     const managed = this.processes.get(id);
@@ -345,15 +365,25 @@ export class ProcessManager {
       };
     }
 
-    const signal = opts?.signal ?? "SIGTERM";
-    const timeoutMs = opts?.timeoutMs ?? 3000;
-
-    managed.triggerAgentTurnOnEnd = opts?.notifyOnEnd === true;
-
     if (!LIVE_STATUSES.has(managed.status)) {
       return { ok: true, info: this.toProcessInfo(managed) };
     }
 
+    const abortSignal = opts?.abortSignal;
+    if (abortSignal?.aborted) {
+      return {
+        ok: false,
+        info: this.toProcessInfo(managed),
+        reason: "cancelled",
+      };
+    }
+
+    const signal = opts?.signal ?? "SIGTERM";
+    const timeoutMs = opts?.timeoutMs ?? 3000;
+    const previousStatus = managed.status;
+    const previousNotifyOnEnd = managed.triggerAgentTurnOnEnd;
+
+    managed.triggerAgentTurnOnEnd = opts?.notifyOnEnd === true;
     this.transition(managed, "terminating");
 
     try {
@@ -361,9 +391,9 @@ export class ProcessManager {
       managed.lastSignalSent = signal;
     } catch (error) {
       const err = error as NodeJS.ErrnoException;
-      if (err.code === "ESRCH") {
-        managed.lastSignalSent = signal;
-      } else if (err.code !== "EPERM") {
+      if (err.code !== "ESRCH") {
+        managed.triggerAgentTurnOnEnd = previousNotifyOnEnd;
+        this.transition(managed, previousStatus);
         return {
           ok: false,
           info: this.toProcessInfo(managed),
@@ -373,12 +403,21 @@ export class ProcessManager {
     }
 
     const graceMs = signal === "SIGKILL" ? 200 : timeoutMs;
+    const waitResult = await this.waitForGracePeriod(graceMs, abortSignal);
 
-    await new Promise((r) => setTimeout(r, graceMs));
+    if (!LIVE_STATUSES.has(managed.status)) {
+      return { ok: true, info: this.toProcessInfo(managed) };
+    }
 
-    const alive = isProcessGroupAlive(managed.pid);
+    if (waitResult === "aborted") {
+      return {
+        ok: false,
+        info: this.toProcessInfo(managed),
+        reason: "cancelled",
+      };
+    }
 
-    if (alive) {
+    if (isProcessGroupAlive(managed.pid)) {
       this.transition(managed, "terminate_timeout");
       return {
         ok: false,
@@ -387,13 +426,7 @@ export class ProcessManager {
       };
     }
 
-    if (!managed.endTime) {
-      managed.endTime = Date.now();
-      managed.exitCode = null;
-      managed.success = false;
-    }
-
-    this.transition(managed, "killed");
+    this.finalizeEndedProcess(managed);
     return { ok: true, info: this.toProcessInfo(managed) };
   }
 

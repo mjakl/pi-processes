@@ -1,4 +1,4 @@
-import type { ExecuteResult } from "../../constants";
+import { type ExecuteResult, LIVE_STATUSES } from "../../constants";
 import type { ProcessManager } from "../../manager";
 import { sanitizeLine } from "../../utils";
 
@@ -62,6 +62,18 @@ export async function executeKill(
   }
 
   const proc = resolved.info;
+  if (!LIVE_STATUSES.has(proc.status)) {
+    const message = `Process "${sanitizeLine(proc.name)}" (${proc.id}) already ${proc.status}`;
+    return {
+      content: [{ type: "text", text: message }],
+      details: {
+        action: "kill",
+        success: true,
+        message,
+      },
+    };
+  }
+
   const force = params.force ?? false;
   const signal = force ? "SIGKILL" : "SIGTERM";
   const timeoutMs = force ? 200 : 3000;

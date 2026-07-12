@@ -36,7 +36,11 @@ export type ManagerEvent =
 
 export type KillResult =
   | { ok: true; info: ProcessInfo }
-  | { ok: false; info: ProcessInfo; reason: "not_found" | "timeout" | "error" };
+  | {
+      ok: false;
+      info: ProcessInfo;
+      reason: "not_found" | "timeout" | "error" | "cancelled";
+    };
 
 export type ResolveProcessResult =
   | { ok: true; info: ProcessInfo }

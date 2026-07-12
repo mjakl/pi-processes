@@ -87,6 +87,48 @@ describe("ProcessManager", () => {
     expect(mocks.killProcessGroup).toHaveBeenCalledWith(proc.pid, "SIGTERM");
   });
 
+  it("restores the prior status when signaling fails", async () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    mocks.killProcessGroup.mockImplementationOnce(() => {
+      const error = new Error("Invalid signal") as NodeJS.ErrnoException;
+      error.code = "EINVAL";
+      throw error;
+    });
+
+    const result = await manager.kill(proc.id, { signal: "SIGTERM" });
+
+    expect(result).toMatchObject({ ok: false, reason: "error" });
+    expect(manager.get(proc.id)?.status).toBe("running");
+  });
+
+  it("supports cancellation before and during the grace period", async () => {
+    const first = manager.start("first", "pnpm dev", process.cwd());
+    const beforeStart = new AbortController();
+    beforeStart.abort();
+
+    const preCancelled = await manager.kill(first.id, {
+      abortSignal: beforeStart.signal,
+    });
+
+    expect(preCancelled).toMatchObject({ ok: false, reason: "cancelled" });
+    expect(manager.get(first.id)?.status).toBe("running");
+    expect(mocks.killProcessGroup).not.toHaveBeenCalled();
+
+    const second = manager.start("second", "pnpm dev", process.cwd());
+    const duringWait = new AbortController();
+    const killPromise = manager.kill(second.id, {
+      signal: "SIGTERM",
+      timeoutMs: 3000,
+      abortSignal: duringWait.signal,
+    });
+    duringWait.abort();
+    const cancelled = await killPromise;
+
+    expect(cancelled).toMatchObject({ ok: false, reason: "cancelled" });
+    expect(manager.get(second.id)?.status).toBe("terminating");
+    expect(mocks.killProcessGroup).toHaveBeenCalledTimes(1);
+  });
+
   it("treats ESRCH during kill as an already-dead process instead of failing", async () => {
     const proc = manager.start("server", "pnpm dev", process.cwd());
     mocks.killProcessGroup.mockImplementationOnce(() => {
@@ -101,11 +143,16 @@ describe("ProcessManager", () => {
       timeoutMs: 3000,
     });
 
+    children[0].emit("close", 0, null);
     await vi.advanceTimersByTimeAsync(3000);
     const result = await killPromise;
 
     expect(result.ok).toBe(true);
-    expect(manager.get(proc.id)?.status).toBe("killed");
+    expect(manager.get(proc.id)).toMatchObject({
+      status: "exited",
+      exitCode: 0,
+      success: true,
+    });
   });
 
   it("suppresses the follow-up agent turn after a tool-triggered kill", async () => {
@@ -124,6 +171,7 @@ describe("ProcessManager", () => {
       timeoutMs: 3000,
     });
 
+    children[0].emit("close", 0, null);
     await vi.advanceTimersByTimeAsync(3000);
     const result = await killPromise;
 
@@ -134,7 +182,12 @@ describe("ProcessManager", () => {
     expect(endedEvents[0]).toMatchObject({
       type: "process_ended",
       triggerAgentTurn: false,
-      info: { id: proc.id, status: "killed" },
+      info: {
+        id: proc.id,
+        status: "killed",
+        exitCode: null,
+        success: false,
+      },
     });
   });
 
@@ -155,6 +208,7 @@ describe("ProcessManager", () => {
       notifyOnEnd: true,
     });
 
+    children[0].emit("close", 0, null);
     await vi.advanceTimersByTimeAsync(3000);
     const result = await killPromise;
 
@@ -165,7 +219,12 @@ describe("ProcessManager", () => {
     expect(endedEvents[0]).toMatchObject({
       type: "process_ended",
       triggerAgentTurn: true,
-      info: { id: proc.id, status: "killed" },
+      info: {
+        id: proc.id,
+        status: "killed",
+        exitCode: null,
+        success: false,
+      },
     });
   });
 
