@@ -4,6 +4,7 @@ import type {
   ArrayExpr,
   Assignment,
   Command,
+  FunctionDecl,
   Program,
   Redirect,
   SimpleCommand,
@@ -46,6 +47,19 @@ export function walkCommands(
   walkProgram(node, { command: callback });
 }
 
+/** Collect function declarations reached by the program's control flow. */
+export function collectFunctionDeclarations(
+  node: Program,
+): Map<string, Statement[]> {
+  const functions = new Map<string, Statement[]>();
+  walkProgram(node, {
+    functionDecl: (declaration) => {
+      functions.set(declaration.name, declaration.body);
+    },
+  });
+  return functions;
+}
+
 /** Return true when any executed statement is asynchronous/backgrounded. */
 export function hasBackgroundStatement(node: Program): boolean {
   return walkProgram(node, {
@@ -53,6 +67,25 @@ export function hasBackgroundStatement(node: Program): boolean {
       statement.background === true ||
       statement.command.type === "CoprocClause",
   });
+}
+
+export function hasUnescapedCommandSubstitution(text: string): boolean {
+  for (let index = 0; index < text.length; index++) {
+    const isSubstitutionStart =
+      text[index] === "`" || (text[index] === "$" && text[index + 1] === "(");
+    if (!isSubstitutionStart) continue;
+
+    let precedingBackslashes = 0;
+    for (
+      let backslash = index - 1;
+      backslash >= 0 && text[backslash] === "\\";
+      backslash--
+    ) {
+      precedingBackslashes++;
+    }
+    if (precedingBackslashes % 2 === 0) return true;
+  }
+  return false;
 }
 
 /** Walk shell text embedded in arithmetic, parameter expansion, and heredocs. */
@@ -67,6 +100,7 @@ interface WalkCallbacks {
   command?: (command: SimpleCommand) => boolean | undefined;
   statement?: (statement: Statement) => boolean | undefined;
   embeddedText?: (text: string) => boolean | undefined;
+  functionDecl?: (declaration: FunctionDecl) => void;
 }
 
 function walkProgram(node: Program, callbacks: WalkCallbacks): boolean {
@@ -161,6 +195,7 @@ function walkCommand(command: Command, callbacks: WalkCallbacks): boolean {
       return false;
 
     case "FunctionDecl":
+      callbacks.functionDecl?.(command);
       // Declaring a function does not execute its body.
       return false;
 
@@ -241,11 +276,15 @@ function walkWordPart(part: WordPart, callbacks: WalkCallbacks): boolean {
   switch (part.type) {
     case "DblQuoted":
       return part.parts.some((nested) => walkWordPart(nested, callbacks));
-    case "ParamExp":
-      return part.value
-        ? callbacks.embeddedText?.(wordToString(part.value)) === true ||
-            walkWord(part.value, callbacks)
-        : false;
+    case "ParamExp": {
+      if (!part.value) return false;
+      const text = wordToString(part.value);
+      return (
+        (hasUnescapedCommandSubstitution(text) &&
+          callbacks.embeddedText?.(text) === true) ||
+        walkWord(part.value, callbacks)
+      );
+    }
     case "CmdSubst":
     case "ProcSubst":
       return walkStatements(part.stmts, callbacks);
@@ -296,9 +335,11 @@ function walkRedirects(
         redirect.target.parts.some(
           (part) => part.type === "SglQuoted" || part.type === "DblQuoted",
         ) || wordToString(redirect.target).includes("\\");
+      const text = wordToString(redirect.heredoc);
       return (
         (!delimiterIsQuoted &&
-          callbacks.embeddedText?.(wordToString(redirect.heredoc)) === true) ||
+          hasUnescapedCommandSubstitution(text) &&
+          callbacks.embeddedText?.(text) === true) ||
         walkWord(redirect.heredoc, callbacks)
       );
     }) ?? false
