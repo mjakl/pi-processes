@@ -18,6 +18,10 @@ interface ManagedProcess extends ProcessInfo {
   lastSignalSent: NodeJS.Signals | null;
   combinedFile: string;
   triggerAgentTurnOnEnd: boolean;
+  leaderClosed: boolean;
+  leaderExitCode: number | null;
+  leaderExitSignal: NodeJS.Signals | null;
+  processError: boolean;
 }
 
 interface ProcessManagerOptions {
@@ -104,24 +108,32 @@ export class ProcessManager {
     for (const managed of this.processes.values()) {
       if (!LIVE_STATUSES.has(managed.status)) continue;
       if (!managed.pid || managed.pid <= 0) continue;
+      if (isProcessGroupAlive(managed.pid)) continue;
 
-      const alive = isProcessGroupAlive(managed.pid);
-      if (alive) continue;
-
-      if (!managed.endTime) {
-        managed.endTime = Date.now();
-      }
-
-      if (managed.lastSignalSent) {
-        managed.success = false;
-        managed.exitCode = null;
-        this.transition(managed, "killed");
-      } else {
-        managed.success = false;
-        managed.exitCode = null;
-        this.transition(managed, "exited");
-      }
+      // The process group can disappear before Node dispatches the child close
+      // event. Wait for close so the real exit code and flushed logs are kept.
+      if (!managed.leaderClosed) continue;
+      this.finalizeEndedProcess(managed);
     }
+  }
+
+  private finalizeEndedProcess(managed: ManagedProcess): void {
+    if (!LIVE_STATUSES.has(managed.status) || !managed.leaderClosed) return;
+
+    managed.endTime ??= Date.now();
+    const killed = Boolean(managed.lastSignalSent || managed.leaderExitSignal);
+    managed.exitCode = killed ? null : managed.leaderExitCode;
+    managed.success = killed ? false : managed.leaderExitCode === 0;
+    this.transition(managed, killed ? "killed" : "exited");
+  }
+
+  private finalizeIfGroupEnded(managed: ManagedProcess): void {
+    if (!managed.leaderClosed || !LIVE_STATUSES.has(managed.status)) return;
+    if (isProcessGroupAlive(managed.pid)) {
+      this.ensureWatcherRunning();
+      return;
+    }
+    this.finalizeEndedProcess(managed);
   }
 
   start(name: string, command: string, cwd: string): ProcessInfo {
@@ -153,6 +165,10 @@ export class ProcessManager {
       lastSignalSent: null,
       combinedFile,
       triggerAgentTurnOnEnd: true,
+      leaderClosed: false,
+      leaderExitCode: null,
+      leaderExitSignal: null,
+      processError: false,
     };
 
     child.stdout?.on("data", (data: Buffer) => {
@@ -188,17 +204,12 @@ export class ProcessManager {
     });
 
     child.on("close", (code, signal) => {
-      if (managed.endTime) return;
+      if (managed.leaderClosed) return;
 
-      managed.exitCode = code;
-      managed.endTime = Date.now();
-      managed.success = code === 0;
-
-      if (signal) {
-        this.transition(managed, "killed");
-      } else {
-        this.transition(managed, "exited");
-      }
+      managed.leaderClosed = true;
+      managed.leaderExitCode = code ?? (managed.processError ? -1 : null);
+      managed.leaderExitSignal = signal;
+      this.finalizeIfGroupEnded(managed);
     });
 
     child.on("error", (err) => {
@@ -207,13 +218,7 @@ export class ProcessManager {
       } catch {
         // Ignore
       }
-
-      if (!managed.endTime) {
-        managed.exitCode = -1;
-        managed.success = false;
-        managed.endTime = Date.now();
-        this.transition(managed, "exited");
-      }
+      managed.processError = true;
     });
 
     if (!child.pid) {

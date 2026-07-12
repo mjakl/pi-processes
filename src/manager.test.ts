@@ -212,6 +212,78 @@ describe("ProcessManager", () => {
     }
   });
 
+  it("keeps tracking descendants after the shell leader closes", () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    const ended = vi.fn();
+    manager.onEvent((event) => {
+      if (event.type === "process_ended") ended(event.info);
+    });
+    mocks.isProcessGroupAlive.mockReturnValue(true);
+
+    children[0].emit("close", 0, null);
+
+    expect(manager.get(proc.id)).toMatchObject({
+      status: "running",
+      endTime: null,
+    });
+    expect(ended).not.toHaveBeenCalled();
+
+    mocks.isProcessGroupAlive.mockReturnValue(false);
+    vi.advanceTimersByTime(5000);
+
+    expect(manager.get(proc.id)).toMatchObject({
+      status: "exited",
+      exitCode: 0,
+      success: true,
+    });
+    expect(ended).toHaveBeenCalledTimes(1);
+  });
+
+  it("kills surviving descendants during cleanup", () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    mocks.isProcessGroupAlive.mockReturnValue(true);
+    children[0].emit("close", 0, null);
+
+    manager.cleanup();
+
+    expect(mocks.killProcessGroup).toHaveBeenCalledWith(proc.pid, "SIGKILL");
+  });
+
+  it("waits for child close before finalizing a dead process group", () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    const ended = vi.fn();
+    manager.onEvent((event) => {
+      if (event.type === "process_ended") ended(event.info);
+    });
+
+    vi.advanceTimersByTime(5000);
+    expect(manager.get(proc.id)?.status).toBe("running");
+    expect(ended).not.toHaveBeenCalled();
+
+    children[0].emit("close", 0, null);
+
+    expect(manager.get(proc.id)).toMatchObject({
+      status: "exited",
+      exitCode: 0,
+      success: true,
+    });
+    expect(ended).toHaveBeenCalledTimes(1);
+  });
+
+  it("finalizes child errors after close flushes the streams", () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+
+    children[0].emit("error", new Error("process error"));
+    expect(manager.get(proc.id)?.status).toBe("running");
+
+    children[0].emit("close", null, null);
+    expect(manager.get(proc.id)).toMatchObject({
+      status: "exited",
+      exitCode: -1,
+      success: false,
+    });
+  });
+
   it("does not emit or restart its watcher for delayed child events after cleanup", () => {
     manager.start("server", "pnpm dev", process.cwd());
     manager.start("tests", "pnpm test --watch", process.cwd());
