@@ -121,10 +121,22 @@ describe("executeStart", () => {
       manager as never,
       { cwd: process.cwd() } as never,
     );
+    const wrappedResult = executeStart(
+      { name: "compose", command: "env docker compose up -d api" },
+      manager as never,
+      { cwd: process.cwd() } as never,
+    );
+    const daemonModeResult = executeStart(
+      { name: "gunicorn", command: "gunicorn --daemon app:server" },
+      manager as never,
+      { cwd: process.cwd() } as never,
+    );
 
     expect(daemonResult.details.success).toBe(false);
     expect(daemonResult.details.message).toContain("stay in the foreground");
     expect(detachedResult.details.success).toBe(false);
+    expect(wrappedResult.details.success).toBe(false);
+    expect(daemonModeResult.details.success).toBe(false);
     expect(manager.start).not.toHaveBeenCalled();
   });
 

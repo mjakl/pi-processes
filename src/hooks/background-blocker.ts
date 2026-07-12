@@ -18,7 +18,7 @@ import {
   wordToString,
 } from "../utils/shell-utils";
 
-const BACKGROUND_CMD_NAMES = new Set(["nohup", "disown", "setsid"]);
+const BACKGROUND_CMD_NAMES = new Set(["daemonize", "disown", "setsid"]);
 const BACKGROUND_PATTERN = /&\s*$/;
 const PACKAGE_MANAGERS = new Set(["npm", "pnpm", "yarn", "bun"]);
 const PACKAGE_EXECUTORS = new Set(["npx", "bunx"]);
@@ -45,6 +45,7 @@ const COMMAND_WRAPPERS = new Set([
   "env",
   "ionice",
   "nice",
+  "nohup",
   "stdbuf",
   "sudo",
   "timeout",
@@ -221,6 +222,7 @@ const WATCH_FLAGS = new Set([
   "--reload",
 ]);
 const DETACH_FLAGS = new Set(["-d", "--detach"]);
+const COMPOSE_WAIT_FLAGS = new Set(["--wait"]);
 const SUSPICIOUS_SCRIPT_NAME =
   /(^|[-_.])(dev|serve|server|start|watch|tail|logs?|port[-_]?forward|preview)([-_.]|$)/i;
 
@@ -341,21 +343,53 @@ function getShellStdinCommand(
 }
 
 export function hasDetachedExecution(command: string): boolean {
+  return hasDetachedExecutionAtDepth(command, 0);
+}
+
+function hasDetachedExecutionAtDepth(command: string, depth: number): boolean {
+  if (depth > 8) return false;
   try {
     const { ast } = parse(command);
     let detached = false;
     walkCommands(ast, (simpleCommand) => {
       const words =
         simpleCommand.words?.map(wordToString).filter(Boolean) ?? [];
-      detached = isDetachedContainerCommand(words);
+      detached = commandWordsHaveDetachedExecution(words, depth);
       return detached;
     });
     return detached;
   } catch {
-    return /\b(?:docker(?:-compose)?|podman)\b[^\n]*(?:\s-d(?:\s|$)|--detach(?:=true)?\b)/i.test(
+    return /\b(?:docker(?:-compose)?|podman)\b[^\n]*(?:\s-d(?:\s|$)|--detach(?:=true)?\b|--wait\b)/i.test(
       command,
     );
   }
+}
+
+function commandWordsHaveDetachedExecution(
+  words: string[],
+  depth: number,
+): boolean {
+  let current = words;
+  for (let wrappers = 0; wrappers < 32 && current.length > 0; wrappers++) {
+    if (isDetachedContainerCommand(current)) return true;
+
+    const nestedCommand = getWrapperCommandString(current);
+    if (
+      nestedCommand &&
+      hasDetachedExecutionAtDepth(nestedCommand, depth + 1)
+    ) {
+      return true;
+    }
+    const shellCommand = getShellCommand(current);
+    if (shellCommand && hasDetachedExecutionAtDepth(shellCommand, depth + 1)) {
+      return true;
+    }
+
+    const unwrapped = unwrapCommand(current);
+    if (!unwrapped) return false;
+    current = unwrapped;
+  }
+  return false;
 }
 
 export function setupBackgroundBlocker(pi: ExtensionAPI): void {
@@ -421,7 +455,10 @@ function classifySimpleCommand(
   const name = basename(rawName).toLowerCase();
   const args = rawArgs.map((arg) => arg.toLowerCase());
 
-  if (BACKGROUND_CMD_NAMES.has(name)) {
+  if (
+    BACKGROUND_CMD_NAMES.has(name) ||
+    isDaemonizingCommand(name, args, rawArgs)
+  ) {
     return {
       kind: "background",
       suggestedName: suggestProcessName(words),
@@ -438,19 +475,40 @@ function classifySimpleCommand(
   return undefined;
 }
 
+function isDaemonizingCommand(
+  name: string,
+  args: string[],
+  rawArgs: string[],
+): boolean {
+  if (name === "gunicorn") {
+    return hasFlag(args, new Set(["-d", "--daemon"]));
+  }
+  if (name === "start-stop-daemon") {
+    return hasFlag(args, new Set(["-b", "--background"]));
+  }
+  if (name === "ssh") return sshForksToBackground(rawArgs);
+  return false;
+}
+
 function isDetachedContainerCommand(words: string[]): boolean {
   if (words.length === 0) return false;
   const name = basename(words[0]).toLowerCase();
   const args = words.slice(1).map((arg) => arg.toLowerCase());
 
   if (name === "docker-compose") {
-    return args.includes("up") && hasDetachFlag(args);
+    return (
+      args.includes("up") &&
+      (hasDetachFlag(args) || hasFlag(args, COMPOSE_WAIT_FLAGS))
+    );
   }
   if (name !== "docker" && name !== "podman") return false;
 
   const invocation = stripLeadingOptions(args, CONTAINER_OPTIONS_WITH_VALUE);
   if (invocation[0] === "compose") {
-    return invocation.includes("up") && hasDetachFlag(invocation);
+    return (
+      invocation.includes("up") &&
+      (hasDetachFlag(invocation) || hasFlag(invocation, COMPOSE_WAIT_FLAGS))
+    );
   }
   return invocation[0] === "run" && hasDetachedRunOption(invocation.slice(1));
 }
@@ -661,15 +719,37 @@ function getWrapperCommandString(words: string[]): string | undefined {
       continue;
     }
     if (!arg.startsWith("-")) return undefined;
-    if (arg === "-S" || arg === "--split-string") return args[index + 1];
+    if (arg === "-S" || arg === "--split-string") {
+      const splitString = args[index + 1];
+      return splitString
+        ? buildEnvSplitCommand(splitString, args.slice(index + 2))
+        : undefined;
+    }
+    if (arg.startsWith("-S") && arg.length > 2) {
+      return buildEnvSplitCommand(arg.slice(2), args.slice(index + 1));
+    }
     if (arg.startsWith("--split-string=")) {
-      return arg.slice("--split-string=".length);
+      return buildEnvSplitCommand(
+        arg.slice("--split-string=".length),
+        args.slice(index + 1),
+      );
     }
 
     const option = arg.toLowerCase().split("=", 1)[0];
     if (ENV_OPTIONS_WITH_VALUE.has(option) && !arg.includes("=")) index++;
   }
   return undefined;
+}
+
+function buildEnvSplitCommand(
+  splitString: string,
+  trailingArgs: string[],
+): string {
+  return [splitString, ...trailingArgs.map(quoteShellWord)].join(" ");
+}
+
+function quoteShellWord(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
 function unwrapCommand(words: string[]): string[] | undefined {
@@ -755,6 +835,18 @@ function isSudoNonExecuting(args: string[]): boolean {
       return false;
     }
     if (longModes.has(arg) || /^-[^-]*[lvkKV]/.test(arg)) return true;
+  }
+  return false;
+}
+
+function sshForksToBackground(args: string[]): boolean {
+  for (let index = 0; index < args.length && args[index].startsWith("-"); ) {
+    const arg = args[index];
+    if (arg === "--") return false;
+    const valueOption = findSshValueOption(arg);
+    const flags = arg.slice(1, valueOption?.index ?? arg.length);
+    if (flags.includes("f")) return true;
+    index += valueOption?.index === arg.length - 1 ? 2 : 1;
   }
   return false;
 }

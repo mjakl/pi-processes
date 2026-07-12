@@ -87,6 +87,10 @@ describe("analyzeManagedCommand", () => {
       kind: "long_running",
       suggestedName: "dev",
     });
+    expect(analyzeManagedCommand("env -S pnpm dev")).toEqual({
+      kind: "long_running",
+      suggestedName: "dev",
+    });
     expect(analyzeManagedCommand(`${"env ".repeat(12)}pnpm dev`)).toEqual({
       kind: "long_running",
       suggestedName: "dev",
@@ -227,6 +231,19 @@ describe("analyzeManagedCommand", () => {
     });
   });
 
+  it("blocks commands that explicitly daemonize", () => {
+    for (const command of [
+      "gunicorn --daemon app:server",
+      "daemonize /usr/bin/server",
+      "start-stop-daemon --start --background --exec /usr/bin/server",
+      "ssh -f host 'sleep 600'",
+    ]) {
+      expect(analyzeManagedCommand(command), command).toMatchObject({
+        kind: "background",
+      });
+    }
+  });
+
   it("blocks suspicious local launcher scripts", () => {
     expect(analyzeManagedCommand("./scripts/start-server.sh")).toEqual({
       kind: "long_running",
@@ -243,6 +260,11 @@ describe("analyzeManagedCommand", () => {
     expect(analyzeManagedCommand("pnpm --dir ./app lint")).toBeUndefined();
     expect(analyzeManagedCommand("bash -c 'pnpm lint'")).toBeUndefined();
     expect(analyzeManagedCommand("env CI=1 pnpm lint")).toBeUndefined();
+    expect(analyzeManagedCommand("nohup echo ok")).toBeUndefined();
+    expect(analyzeManagedCommand("nohup --help")).toBeUndefined();
+    expect(analyzeManagedCommand("nohup pnpm dev")).toMatchObject({
+      kind: "long_running",
+    });
     expect(analyzeManagedCommand("command -v pnpm dev")).toBeUndefined();
     expect(analyzeManagedCommand("command -V pnpm dev")).toBeUndefined();
     expect(analyzeManagedCommand("command -pv pnpm dev")).toBeUndefined();
@@ -280,6 +302,29 @@ describe("analyzeManagedCommand", () => {
     ).toBe(true);
     expect(hasDetachedExecution("docker run -d nginx")).toBe(true);
     expect(hasDetachedExecution("podman run --detach nginx")).toBe(true);
+    expect(hasDetachedExecution("docker compose up --wait api")).toBe(true);
+    expect(hasDetachedExecution("docker compose up --wait=true api")).toBe(
+      true,
+    );
+    expect(hasDetachedExecution("docker-compose up --wait api")).toBe(true);
+    expect(hasDetachedExecution("env docker compose up -d api")).toBe(true);
+    expect(hasDetachedExecution("env -S'docker compose up -d'")).toBe(true);
+    expect(
+      analyzeManagedCommand("env -S'gunicorn -D app:server'"),
+    ).toMatchObject({ kind: "background" });
+    expect(
+      analyzeManagedCommand("env -S'gunicorn' -D app:server"),
+    ).toMatchObject({ kind: "background" });
+    expect(analyzeManagedCommand("env -S'ssh' -f host sleep")).toMatchObject({
+      kind: "background",
+    });
+    expect(hasDetachedExecution("env -S'docker compose up' --wait api")).toBe(
+      true,
+    );
+    expect(hasDetachedExecution("sudo docker run -d nginx")).toBe(true);
+    expect(hasDetachedExecution("bash -lc 'docker compose up -d api'")).toBe(
+      true,
+    );
     expect(hasDetachedExecution("docker compose up api")).toBe(false);
     expect(hasDetachedExecution("docker run alpine echo compose up -d")).toBe(
       false,

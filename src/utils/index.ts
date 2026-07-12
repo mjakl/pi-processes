@@ -6,4 +6,8 @@ export {
   truncateCmd,
   truncateUtf8Bytes,
 } from "./format";
-export { isProcessGroupAlive, killProcessGroup } from "./process-group";
+export {
+  isProcessAlive,
+  isProcessGroupAlive,
+  killProcessGroup,
+} from "./process-group";

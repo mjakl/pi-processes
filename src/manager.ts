@@ -11,7 +11,7 @@ import {
   type ProcessStatus,
   type ResolveProcessResult,
 } from "./constants";
-import { isProcessGroupAlive, killProcessGroup } from "./utils";
+import { isProcessAlive, isProcessGroupAlive, killProcessGroup } from "./utils";
 import { spawnCommand } from "./utils/command-executor";
 import {
   BoundedLogFile,
@@ -23,6 +23,7 @@ interface ManagedProcess extends ProcessInfo {
   lastSignalSent: NodeJS.Signals | null;
   combinedFile: string;
   triggerAgentTurnOnEnd: boolean;
+  leaderExited: boolean;
   leaderClosed: boolean;
   leaderExitCode: number | null;
   leaderExitSignal: NodeJS.Signals | null;
@@ -129,11 +130,19 @@ export class ProcessManager {
     return false;
   }
 
+  private isManagedGroupAlive(managed: ManagedProcess): boolean {
+    // Once Node has reaped the original leader, a live process with the same
+    // numeric PID proves that the old PGID was released and reused. Never
+    // signal that unrelated replacement group.
+    if (managed.leaderExited && isProcessAlive(managed.pid)) return false;
+    return isProcessGroupAlive(managed.pid);
+  }
+
   private livenessTick(): void {
     for (const managed of this.processes.values()) {
       if (!LIVE_STATUSES.has(managed.status)) continue;
       if (!managed.pid || managed.pid <= 0) continue;
-      if (isProcessGroupAlive(managed.pid)) continue;
+      if (this.isManagedGroupAlive(managed)) continue;
 
       // The process group can disappear before Node dispatches the child close
       // event. Wait for close so the real exit code and flushed logs are kept.
@@ -154,7 +163,7 @@ export class ProcessManager {
 
   private finalizeIfGroupEnded(managed: ManagedProcess): void {
     if (!managed.leaderClosed || !LIVE_STATUSES.has(managed.status)) return;
-    if (isProcessGroupAlive(managed.pid)) {
+    if (this.isManagedGroupAlive(managed)) {
       this.ensureWatcherRunning();
       return;
     }
@@ -244,6 +253,7 @@ export class ProcessManager {
       lastSignalSent: null,
       combinedFile,
       triggerAgentTurnOnEnd: true,
+      leaderExited: false,
       leaderClosed: false,
       leaderExitCode: null,
       leaderExitSignal: null,
@@ -306,13 +316,21 @@ export class ProcessManager {
       }
     });
 
+    child.on("exit", (code, signal) => {
+      if (!trackingStarted || managed.leaderExited) return;
+      managed.leaderExited = true;
+      managed.leaderExitCode = code ?? (managed.processError ? -1 : null);
+      managed.leaderExitSignal = signal;
+    });
+
     child.on("close", (code, signal) => {
       if (!trackingStarted || managed.leaderClosed) return;
 
       managed.closeLogs();
+      managed.leaderExited = true;
       managed.leaderClosed = true;
-      managed.leaderExitCode = code ?? (managed.processError ? -1 : null);
-      managed.leaderExitSignal = signal;
+      managed.leaderExitCode ??= code ?? (managed.processError ? -1 : null);
+      managed.leaderExitSignal ??= signal;
       for (const waiter of managed.closeWaiters) waiter();
       managed.closeWaiters.clear();
       this.finalizeIfGroupEnded(managed);
@@ -559,6 +577,18 @@ export class ProcessManager {
     const abortSignal = callerAbortSignal
       ? AbortSignal.any([callerAbortSignal, this.cleanupAbortController.signal])
       : this.cleanupAbortController.signal;
+    if (managed.leaderExited && !this.isManagedGroupAlive(managed)) {
+      if (managed.leaderClosed) {
+        this.finalizeEndedProcess(managed);
+        return { ok: true, info: this.toProcessInfo(managed) };
+      }
+      return {
+        ok: false,
+        info: this.toProcessInfo(managed),
+        reason: "error",
+      };
+    }
+
     const signal = opts?.signal ?? "SIGTERM";
     const timeoutMs = opts?.timeoutMs ?? 3000;
     const previousStatus = managed.status;
@@ -606,7 +636,7 @@ export class ProcessManager {
       };
     }
 
-    if (isProcessGroupAlive(managed.pid)) {
+    if (this.isManagedGroupAlive(managed)) {
       this.transition(managed, "terminate_timeout");
       return {
         ok: false,
@@ -642,7 +672,7 @@ export class ProcessManager {
     if (!LIVE_STATUSES.has(managed.status)) {
       return { ok: true, info: this.toProcessInfo(managed) };
     }
-    if (isProcessGroupAlive(managed.pid)) {
+    if (this.isManagedGroupAlive(managed)) {
       this.transition(managed, "terminate_timeout");
       return {
         ok: false,
@@ -694,6 +724,7 @@ export class ProcessManager {
   private shutdownKillAll(): void {
     for (const p of this.processes.values()) {
       if (!LIVE_STATUSES.has(p.status)) continue;
+      if (!this.isManagedGroupAlive(p)) continue;
       try {
         killProcessGroup(p.pid, "SIGKILL");
       } catch {

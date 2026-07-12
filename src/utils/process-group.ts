@@ -13,6 +13,17 @@ export function isProcessGroupAlive(pgid: number): boolean {
   }
 }
 
+/** Check whether a specific process ID currently exists. */
+export function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    return err.code === "EPERM";
+  }
+}
+
 /**
  * Send a signal to an entire process group.
  * Negative PID targets the process group.

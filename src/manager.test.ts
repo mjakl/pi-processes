@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   spawnCommand: vi.fn(),
+  isProcessAlive: vi.fn(),
   isProcessGroupAlive: vi.fn(),
   killProcessGroup: vi.fn(),
 }));
@@ -14,6 +15,7 @@ vi.mock("./utils/command-executor", () => ({
 }));
 
 vi.mock("./utils", () => ({
+  isProcessAlive: mocks.isProcessAlive,
   isProcessGroupAlive: mocks.isProcessGroupAlive,
   killProcessGroup: mocks.killProcessGroup,
 }));
@@ -48,6 +50,7 @@ describe("ProcessManager", () => {
       children.push(child);
       return child;
     });
+    mocks.isProcessAlive.mockReturnValue(false);
     mocks.isProcessGroupAlive.mockReturnValue(false);
     manager = new ProcessManager();
   });
@@ -480,6 +483,30 @@ describe("ProcessManager", () => {
     expect(ended).toHaveBeenCalledTimes(1);
   });
 
+  it("guards PID reuse as soon as the leader exit is observed", async () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    mocks.isProcessGroupAlive.mockReturnValue(true);
+    children[0].emit("exit", 0, null);
+    mocks.isProcessAlive.mockReturnValue(true);
+
+    const result = await manager.kill(proc.id, { signal: "SIGTERM" });
+
+    expect(result).toMatchObject({ ok: false, reason: "error" });
+    expect(mocks.killProcessGroup).not.toHaveBeenCalled();
+  });
+
+  it("never signals a process group whose leader PID was reused", async () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    mocks.isProcessGroupAlive.mockReturnValue(true);
+    children[0].emit("close", 0, null);
+    mocks.isProcessAlive.mockReturnValue(true);
+
+    const result = await manager.kill(proc.id, { signal: "SIGTERM" });
+
+    expect(result).toMatchObject({ ok: true, info: { status: "exited" } });
+    expect(mocks.killProcessGroup).not.toHaveBeenCalled();
+  });
+
   it("kills surviving descendants during cleanup", () => {
     const proc = manager.start("server", "pnpm dev", process.cwd());
     mocks.isProcessGroupAlive.mockReturnValue(true);
@@ -533,6 +560,7 @@ describe("ProcessManager", () => {
     manager.start("tests", "pnpm test --watch", process.cwd());
     const listener = vi.fn();
     manager.onEvent(listener);
+    mocks.isProcessGroupAlive.mockReturnValue(true);
 
     manager.cleanup();
 
