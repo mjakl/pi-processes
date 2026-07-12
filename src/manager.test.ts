@@ -115,6 +115,10 @@ describe("ProcessManager", () => {
     expect(mocks.killProcessGroup).not.toHaveBeenCalled();
 
     const second = manager.start("second", "pnpm dev", process.cwd());
+    const endedEvents: ManagerEvent[] = [];
+    manager.onEvent((event) => {
+      if (event.type === "process_ended") endedEvents.push(event);
+    });
     const duringWait = new AbortController();
     const killPromise = manager.kill(second.id, {
       signal: "SIGTERM",
@@ -124,9 +128,86 @@ describe("ProcessManager", () => {
     duringWait.abort();
     const cancelled = await killPromise;
 
-    expect(cancelled).toMatchObject({ ok: false, reason: "cancelled" });
-    expect(manager.get(second.id)?.status).toBe("running");
+    expect(cancelled).toMatchObject({
+      ok: false,
+      reason: "confirmation_cancelled",
+      info: { status: "terminate_timeout" },
+    });
+    expect(manager.get(second.id)?.status).toBe("terminate_timeout");
     expect(mocks.killProcessGroup).toHaveBeenCalledTimes(1);
+
+    children[1].emit("close", null, "SIGTERM");
+    expect(endedEvents).toHaveLength(1);
+    expect(endedEvents[0]).toMatchObject({ triggerAgentTurn: false });
+  });
+
+  it("serializes overlapping kill operations for the same process", async () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    mocks.isProcessGroupAlive.mockReturnValue(true);
+
+    const terminate = manager.kill(proc.id, {
+      signal: "SIGTERM",
+      timeoutMs: 100,
+    });
+    const force = manager.kill(proc.id, {
+      signal: "SIGKILL",
+      timeoutMs: 200,
+    });
+
+    expect(mocks.killProcessGroup).toHaveBeenCalledTimes(1);
+    expect(mocks.killProcessGroup).toHaveBeenLastCalledWith(
+      proc.pid,
+      "SIGTERM",
+    );
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await terminate).toMatchObject({ ok: false, reason: "timeout" });
+    expect(mocks.killProcessGroup).toHaveBeenCalledTimes(2);
+    expect(mocks.killProcessGroup).toHaveBeenLastCalledWith(
+      proc.pid,
+      "SIGKILL",
+    );
+
+    mocks.isProcessGroupAlive.mockReturnValue(false);
+    children[0].emit("close", null, "SIGKILL");
+    await vi.advanceTimersByTimeAsync(200);
+    expect(await force).toMatchObject({ ok: true, info: { status: "killed" } });
+  });
+
+  it("cancels pending kill waits during cleanup", async () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    mocks.isProcessGroupAlive.mockReturnValue(true);
+    const killPromise = manager.kill(proc.id, {
+      signal: "SIGTERM",
+      timeoutMs: 3000,
+    });
+
+    manager.cleanup();
+    const result = await killPromise;
+
+    expect(result).toMatchObject({ ok: false, reason: "cancelled" });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not claim a signal was sent when ESRCH and cancellation race", async () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    mocks.killProcessGroup.mockImplementationOnce(() => {
+      const error = new Error("No such process") as NodeJS.ErrnoException;
+      error.code = "ESRCH";
+      throw error;
+    });
+    const controller = new AbortController();
+    const killPromise = manager.kill(proc.id, {
+      signal: "SIGTERM",
+      abortSignal: controller.signal,
+    });
+
+    controller.abort();
+
+    expect(await killPromise).toMatchObject({
+      ok: false,
+      reason: "cancelled",
+    });
   });
 
   it("treats ESRCH during kill as an already-dead process instead of failing", async () => {
@@ -281,7 +362,7 @@ describe("ProcessManager", () => {
     const result = await killPromise;
 
     expect(result).toMatchObject({ ok: false, reason: "error" });
-    expect(manager.get(proc.id)?.status).toBe("running");
+    expect(manager.get(proc.id)?.status).toBe("terminate_timeout");
   });
 
   it("handles PID-less spawn failures without an unhandled child error", () => {

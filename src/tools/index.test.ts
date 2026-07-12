@@ -3,6 +3,7 @@ import type { ProcessManager } from "../manager";
 import { setupProcessesTools } from "./index";
 
 interface CapturedTool {
+  executionMode: string;
   parameters: {
     properties: { action: { type: string; enum: string[]; anyOf?: unknown } };
   };
@@ -49,6 +50,7 @@ describe("process tool contract", () => {
       "clear",
     ]);
     expect(action.anyOf).toBeUndefined();
+    expect(tool.executionMode).toBe("sequential");
   });
 
   it("rejects blank required and action-irrelevant parameters", async () => {

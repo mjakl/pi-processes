@@ -190,6 +190,8 @@ Important behavior:
 Preferred pattern: start the process once, let the turn stop, and resume from the automatic notification instead of polling.`,
     promptSnippet:
       "Start and manage background processes without blocking the conversation; process start waits for notifications by default",
+    executionMode: "sequential",
+
     promptGuidelines: [
       "Use the process tool instead of bash for dev servers, watch mode, log tails, port-forwards, or commands that should keep running.",
       "After process start, do not call process list/output/logs just to wait. If the next step is waiting, call process start by itself; by default it ends the turn and the extension will resume the agent when the process exits.",

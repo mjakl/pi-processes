@@ -51,6 +51,8 @@ export class ProcessManager {
   private events = new EventEmitter();
   private watcher: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
+  private cleanupAbortController = new AbortController();
+  private killOperations = new Map<string, Promise<KillResult>>();
   private getConfiguredShellPath: () => string | undefined;
 
   constructor(options?: ProcessManagerOptions) {
@@ -490,6 +492,35 @@ export class ProcessManager {
       abortSignal?: AbortSignal;
     },
   ): Promise<KillResult> {
+    const previous = this.killOperations.get(id);
+    const operation = previous
+      ? previous
+          .then(
+            () => undefined,
+            () => undefined,
+          )
+          .then(() => this.performKill(id, opts))
+      : this.performKill(id, opts);
+    this.killOperations.set(id, operation);
+
+    try {
+      return await operation;
+    } finally {
+      if (this.killOperations.get(id) === operation) {
+        this.killOperations.delete(id);
+      }
+    }
+  }
+
+  private async performKill(
+    id: string,
+    opts?: {
+      signal?: NodeJS.Signals;
+      timeoutMs?: number;
+      notifyOnEnd?: boolean;
+      abortSignal?: AbortSignal;
+    },
+  ): Promise<KillResult> {
     const managed = this.processes.get(id);
     if (!managed) {
       return {
@@ -516,8 +547,8 @@ export class ProcessManager {
       return { ok: true, info: this.toProcessInfo(managed) };
     }
 
-    const abortSignal = opts?.abortSignal;
-    if (abortSignal?.aborted) {
+    const callerAbortSignal = opts?.abortSignal;
+    if (this.disposed || callerAbortSignal?.aborted) {
       return {
         ok: false,
         info: this.toProcessInfo(managed),
@@ -525,6 +556,9 @@ export class ProcessManager {
       };
     }
 
+    const abortSignal = callerAbortSignal
+      ? AbortSignal.any([callerAbortSignal, this.cleanupAbortController.signal])
+      : this.cleanupAbortController.signal;
     const signal = opts?.signal ?? "SIGTERM";
     const timeoutMs = opts?.timeoutMs ?? 3000;
     const previousStatus = managed.status;
@@ -538,9 +572,11 @@ export class ProcessManager {
     managed.triggerAgentTurnOnEnd = opts?.notifyOnEnd === true;
     this.transition(managed, "terminating");
 
+    let signalSent = false;
     try {
       killProcessGroup(managed.pid, signal);
       managed.lastSignalSent = signal;
+      signalSent = true;
     } catch (error) {
       const err = error as NodeJS.ErrnoException;
       if (err.code !== "ESRCH") {
@@ -561,11 +597,12 @@ export class ProcessManager {
     }
 
     if (waitResult === "aborted") {
-      restoreLiveState();
+      if (!this.disposed) this.transition(managed, "terminate_timeout");
       return {
         ok: false,
         info: this.toProcessInfo(managed),
-        reason: "cancelled",
+        reason:
+          this.disposed || !signalSent ? "cancelled" : "confirmation_cancelled",
       };
     }
 
@@ -588,11 +625,16 @@ export class ProcessManager {
         if (!LIVE_STATUSES.has(managed.status)) {
           return { ok: true, info: this.toProcessInfo(managed) };
         }
-        restoreLiveState();
+        if (!this.disposed) this.transition(managed, "terminate_timeout");
         return {
           ok: false,
           info: this.toProcessInfo(managed),
-          reason: closeResult === "aborted" ? "cancelled" : "error",
+          reason:
+            closeResult === "aborted" && !this.disposed && signalSent
+              ? "confirmation_cancelled"
+              : closeResult === "aborted"
+                ? "cancelled"
+                : "error",
         };
       }
     }
@@ -611,7 +653,7 @@ export class ProcessManager {
 
     this.finalizeEndedProcess(managed);
     if (LIVE_STATUSES.has(managed.status)) {
-      restoreLiveState();
+      this.transition(managed, "terminate_timeout");
       return {
         ok: false,
         info: this.toProcessInfo(managed),
@@ -670,6 +712,7 @@ export class ProcessManager {
   cleanup(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.cleanupAbortController.abort();
     this.stopWatcher();
     this.events.removeAllListeners("event");
     this.shutdownKillAll();

@@ -93,8 +93,14 @@ export async function executeKill(
     };
   }
 
-  if (result.reason === "cancelled") {
-    const message = `Kill cancelled for "${sanitizeLine(proc.name)}" (${proc.id})`;
+  if (
+    result.reason === "cancelled" ||
+    result.reason === "confirmation_cancelled"
+  ) {
+    const message =
+      result.reason === "confirmation_cancelled"
+        ? `${signal} was sent to "${sanitizeLine(proc.name)}" (${proc.id}), but waiting for process exit was cancelled`
+        : `Kill cancelled for "${sanitizeLine(proc.name)}" (${proc.id})`;
     return {
       content: [{ type: "text", text: message }],
       details: {

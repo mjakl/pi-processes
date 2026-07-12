@@ -39,7 +39,12 @@ export type KillResult =
   | {
       ok: false;
       info: ProcessInfo;
-      reason: "not_found" | "timeout" | "error" | "cancelled";
+      reason:
+        | "not_found"
+        | "timeout"
+        | "error"
+        | "cancelled"
+        | "confirmation_cancelled";
     };
 
 export type ResolveProcessResult =
