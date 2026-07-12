@@ -71,10 +71,21 @@ describe("analyzeManagedCommand", () => {
       kind: "long_running",
       suggestedName: "dev",
     });
+    expect(analyzeManagedCommand("bash -c -- 'pnpm dev'")).toEqual({
+      kind: "long_running",
+      suggestedName: "dev",
+    });
     expect(analyzeManagedCommand("env NODE_ENV=development pnpm dev")).toEqual({
       kind: "long_running",
       suggestedName: "dev",
     });
+    expect(analyzeManagedCommand("env -a fake pnpm dev")).toEqual({
+      kind: "long_running",
+      suggestedName: "dev",
+    });
+    expect(
+      analyzeManagedCommand("env -a fake setsid -f sleep 600"),
+    ).toMatchObject({ kind: "background" });
     expect(analyzeManagedCommand("sudo -u app pnpm dev")).toEqual({
       kind: "long_running",
       suggestedName: "dev",

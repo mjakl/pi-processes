@@ -30,6 +30,7 @@ interface ManagedProcess extends ProcessInfo {
   processError: boolean;
   logError: boolean;
   closeWaiters: Set<() => void>;
+  endWaiters: Set<() => void>;
   flushLogs: () => Promise<void>;
   closeLogs: () => Promise<void>;
 }
@@ -98,6 +99,8 @@ export class ProcessManager {
     this.emit({ type: "processes_changed" });
 
     if (next === "exited" || next === "killed") {
+      for (const waiter of managed.endWaiters) waiter();
+      managed.endWaiters.clear();
       this.emit({
         type: "process_ended",
         info: this.toProcessInfo(managed),
@@ -281,6 +284,7 @@ export class ProcessManager {
       processError: false,
       logError: false,
       closeWaiters: new Set(),
+      endWaiters: new Set(),
       flushLogs: flushLogWriters,
       closeLogs: closeLogWriters,
     };
@@ -494,21 +498,30 @@ export class ProcessManager {
   }
 
   private waitForGracePeriod(
+    managed: ManagedProcess,
     milliseconds: number,
     signal?: AbortSignal,
-  ): Promise<"elapsed" | "aborted"> {
+  ): Promise<"ended" | "elapsed" | "aborted"> {
+    if (!LIVE_STATUSES.has(managed.status)) return Promise.resolve("ended");
     if (signal?.aborted) return Promise.resolve("aborted");
 
     return new Promise((resolve) => {
-      const finish = (result: "elapsed" | "aborted") => {
+      let settled = false;
+      const finish = (result: "ended" | "elapsed" | "aborted") => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
+        managed.endWaiters.delete(onEnd);
         signal?.removeEventListener("abort", onAbort);
         resolve(result);
       };
+      const onEnd = () => finish("ended");
       const onAbort = () => finish("aborted");
       const timer = setTimeout(() => finish("elapsed"), milliseconds);
+      managed.endWaiters.add(onEnd);
       signal?.addEventListener("abort", onAbort, { once: true });
-      if (signal?.aborted) onAbort();
+      if (!LIVE_STATUSES.has(managed.status)) onEnd();
+      else if (signal?.aborted) onAbort();
     });
   }
 
@@ -659,7 +672,11 @@ export class ProcessManager {
     }
 
     const graceMs = signal === "SIGKILL" ? 200 : timeoutMs;
-    const waitResult = await this.waitForGracePeriod(graceMs, abortSignal);
+    const waitResult = await this.waitForGracePeriod(
+      managed,
+      graceMs,
+      abortSignal,
+    );
 
     if (!LIVE_STATUSES.has(managed.status)) {
       return { ok: true, info: this.toProcessInfo(managed) };

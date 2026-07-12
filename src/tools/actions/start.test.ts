@@ -131,12 +131,18 @@ describe("executeStart", () => {
       manager as never,
       { cwd: process.cwd() } as never,
     );
+    const nestedResult = executeStart(
+      { name: "escape", command: "bash -c -- 'setsid -f sleep 600'" },
+      manager as never,
+      { cwd: process.cwd() } as never,
+    );
 
     expect(daemonResult.details.success).toBe(false);
     expect(daemonResult.details.message).toContain("stay in the foreground");
     expect(detachedResult.details.success).toBe(false);
     expect(wrappedResult.details.success).toBe(false);
     expect(daemonModeResult.details.success).toBe(false);
+    expect(nestedResult.details.success).toBe(false);
     expect(manager.start).not.toHaveBeenCalled();
   });
 

@@ -168,13 +168,32 @@ export class CombinedLogWriter {
     state.ended = true;
     const append = this.appendText(stream, state.decoder.end(), true);
     return this.streams.stdout.ended && this.streams.stderr.ended
-      ? append.then(() => this.output.close())
+      ? this.finishAndClose([append])
       : append;
   }
 
   async close(): Promise<void> {
-    await Promise.all([this.end("stdout"), this.end("stderr")]);
-    await this.output.close();
+    const endings = await Promise.allSettled([
+      this.end("stdout"),
+      this.end("stderr"),
+    ]);
+    await this.finishAndClose(
+      endings
+        .filter(
+          (result): result is PromiseRejectedResult =>
+            result.status === "rejected",
+        )
+        .map((result) => Promise.reject(result.reason)),
+    );
+  }
+
+  private async finishAndClose(operations: Promise<void>[]): Promise<void> {
+    const results = await Promise.allSettled(operations);
+    const closeResult = await Promise.allSettled([this.output.close()]);
+    const failure = [...results, ...closeResult].find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    if (failure) throw failure.reason;
   }
 
   flush(): Promise<void> {

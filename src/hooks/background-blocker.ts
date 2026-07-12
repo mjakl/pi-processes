@@ -73,7 +73,14 @@ const PACKAGE_EXEC_OPTIONS_WITH_VALUE = new Set([
   "-w",
   "--workspace",
 ]);
-const ENV_OPTIONS_WITH_VALUE = new Set(["-c", "--chdir", "-u", "--unset"]);
+const ENV_OPTIONS_WITH_VALUE = new Set([
+  "-a",
+  "--argv0",
+  "-c",
+  "--chdir",
+  "-u",
+  "--unset",
+]);
 const RUN_WRAPPER_OPTIONS_WITH_VALUE = new Map<string, Set<string>>([
   [
     "uv",
@@ -817,7 +824,7 @@ function getShellCommand(words: string[]): string | undefined {
       option === "--command" ||
       (/^-[^-]+$/.test(option) && option.slice(1).includes("c"))
     ) {
-      return words[index + 1];
+      return words[index + 1] === "--" ? words[index + 2] : words[index + 1];
     }
     if (SHELL_OPTIONS_WITH_VALUE.has(option) && !option.includes("=")) index++;
   }

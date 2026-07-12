@@ -144,6 +144,23 @@ describe("log file helpers", () => {
     await expect(log.append("more data")).rejects.toBeDefined();
   });
 
+  it("closes the combined descriptor after an output failure", async () => {
+    const writer = new CombinedLogWriter(filePath, {
+      maxBytes: 1024,
+      retainBytes: 768,
+    });
+    writers.push(writer);
+    const output = (writer as unknown as { output: { fd: number | null } })
+      .output;
+    closeSync(output.fd as number);
+
+    await expect(
+      writer.write("stderr", Buffer.from("failed\n")),
+    ).rejects.toBeDefined();
+    await expect(writer.close()).rejects.toBeDefined();
+    expect(output.fd).toBeNull();
+  });
+
   it("schedules large rotation work asynchronously", async () => {
     const log = new BoundedLogFile(filePath, {
       maxBytes: 5 * 1024 * 1024,

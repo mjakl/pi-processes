@@ -245,6 +245,24 @@ describe("ProcessManager", () => {
     });
   });
 
+  it("finishes a successful kill as soon as the process ends", async () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    mocks.isProcessGroupAlive.mockReturnValue(false);
+    const killPromise = manager.kill(proc.id, {
+      signal: "SIGTERM",
+      timeoutMs: 3000,
+    });
+
+    children[0].emit("close", 0, null);
+    await manager.getOutput(proc.id);
+
+    expect(await killPromise).toMatchObject({
+      ok: true,
+      info: { status: "killed" },
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("suppresses the follow-up agent turn after a tool-triggered kill", async () => {
     const proc = manager.start("server", "pnpm dev", process.cwd());
     const endedEvents: ManagerEvent[] = [];
