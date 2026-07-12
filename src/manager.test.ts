@@ -1,4 +1,6 @@
 import { EventEmitter } from "node:events";
+import { existsSync, statSync } from "node:fs";
+import { dirname } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -165,6 +167,31 @@ describe("ProcessManager", () => {
       triggerAgentTurn: true,
       info: { id: proc.id, status: "killed" },
     });
+  });
+
+  it("uses private, independent log directories", () => {
+    const otherManager = new ProcessManager();
+
+    try {
+      const first = manager.start("server", "pnpm dev", process.cwd());
+      const second = otherManager.start(
+        "tests",
+        "pnpm test --watch",
+        process.cwd(),
+      );
+      const firstDir = dirname(first.stdoutFile);
+      const secondDir = dirname(second.stdoutFile);
+
+      expect(firstDir).not.toBe(secondDir);
+      expect(statSync(firstDir).mode & 0o077).toBe(0);
+      expect(statSync(first.stdoutFile).mode & 0o177).toBe(0);
+
+      manager.cleanup();
+      expect(existsSync(firstDir)).toBe(false);
+      expect(existsSync(second.stdoutFile)).toBe(true);
+    } finally {
+      otherManager.cleanup();
+    }
   });
 
   it("does not emit or restart its watcher for delayed child events after cleanup", () => {

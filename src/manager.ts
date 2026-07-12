@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { appendFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -27,17 +27,23 @@ interface ProcessManagerOptions {
 export class ProcessManager {
   private processes: Map<string, ManagedProcess> = new Map();
   private counter = 0;
-  private logDir: string;
+  private logDir: string | null = null;
   private events = new EventEmitter();
   private watcher: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
   private getConfiguredShellPath: () => string | undefined;
 
   constructor(options?: ProcessManagerOptions) {
-    this.logDir = join(tmpdir(), `pi-processes-${Date.now()}`);
-    mkdirSync(this.logDir, { recursive: true });
     this.getConfiguredShellPath =
       options?.getConfiguredShellPath ?? (() => undefined);
+  }
+
+  private ensureLogDir(): string {
+    if (this.disposed) {
+      throw new Error("Process manager has been disposed");
+    }
+    this.logDir ??= mkdtempSync(join(tmpdir(), "pi-processes-"));
+    return this.logDir;
   }
 
   onEvent(listener: (event: ManagerEvent) => void): () => void {
@@ -120,13 +126,14 @@ export class ProcessManager {
 
   start(name: string, command: string, cwd: string): ProcessInfo {
     const id = `proc_${++this.counter}`;
-    const stdoutFile = join(this.logDir, `${id}-stdout.log`);
-    const stderrFile = join(this.logDir, `${id}-stderr.log`);
-    const combinedFile = join(this.logDir, `${id}-combined.log`);
+    const logDir = this.ensureLogDir();
+    const stdoutFile = join(logDir, `${id}-stdout.log`);
+    const stderrFile = join(logDir, `${id}-stderr.log`);
+    const combinedFile = join(logDir, `${id}-combined.log`);
 
-    appendFileSync(stdoutFile, "");
-    appendFileSync(stderrFile, "");
-    appendFileSync(combinedFile, "");
+    appendFileSync(stdoutFile, "", { mode: 0o600 });
+    appendFileSync(stderrFile, "", { mode: 0o600 });
+    appendFileSync(combinedFile, "", { mode: 0o600 });
 
     const child = spawnCommand(command, cwd, this.getConfiguredShellPath());
 
@@ -445,10 +452,13 @@ export class ProcessManager {
     this.events.removeAllListeners("event");
     this.shutdownKillAll();
 
-    try {
-      rmSync(this.logDir, { recursive: true, force: true });
-    } catch {
-      // Ignore
+    if (this.logDir) {
+      try {
+        rmSync(this.logDir, { recursive: true, force: true });
+      } catch {
+        // Ignore
+      }
+      this.logDir = null;
     }
   }
 
