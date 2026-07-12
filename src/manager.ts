@@ -27,6 +27,7 @@ interface ManagedProcess extends ProcessInfo {
   leaderExitCode: number | null;
   leaderExitSignal: NodeJS.Signals | null;
   processError: boolean;
+  closeWaiters: Set<() => void>;
 }
 
 interface ProcessManagerOptions {
@@ -36,6 +37,7 @@ interface ProcessManagerOptions {
 const LOG_FILE_MAX_BYTES = 5 * 1024 * 1024;
 const LOG_FILE_RETAIN_BYTES = 4 * 1024 * 1024;
 const TAIL_READ_MAX_BYTES = 512 * 1024;
+const CHILD_CLOSE_WAIT_MS = 500;
 const LOG_FILE_OPTIONS = {
   maxBytes: LOG_FILE_MAX_BYTES,
   retainBytes: LOG_FILE_RETAIN_BYTES,
@@ -71,7 +73,14 @@ export class ProcessManager {
 
   private emit(event: ManagerEvent): void {
     if (this.disposed) return;
-    this.events.emit("event", event);
+    for (const listener of this.events.listeners("event")) {
+      try {
+        (listener as (event: ManagerEvent) => void)(event);
+      } catch {
+        // One UI/integration listener must not corrupt process state or prevent
+        // other listeners from observing the event.
+      }
+    }
   }
 
   private transition(managed: ManagedProcess, next: ProcessStatus): void {
@@ -149,6 +158,16 @@ export class ProcessManager {
     this.finalizeEndedProcess(managed);
   }
 
+  private removeProcessLogFiles(...filePaths: string[]): void {
+    for (const filePath of filePaths) {
+      try {
+        rmSync(filePath, { force: true });
+      } catch {
+        // Ignore cleanup failures
+      }
+    }
+  }
+
   start(name: string, command: string, cwd: string): ProcessInfo {
     const id = `proc_${++this.counter}`;
     const logDir = this.ensureLogDir();
@@ -156,14 +175,29 @@ export class ProcessManager {
     const stderrFile = join(logDir, `${id}-stderr.log`);
     const combinedFile = join(logDir, `${id}-combined.log`);
 
-    appendFileSync(stdoutFile, "", { mode: 0o600 });
-    appendFileSync(stderrFile, "", { mode: 0o600 });
-    appendFileSync(combinedFile, "", { mode: 0o600 });
+    let stdoutLog: BoundedLogFile;
+    let stderrLog: BoundedLogFile;
+    let combinedLog: CombinedLogWriter;
+    try {
+      appendFileSync(stdoutFile, "", { mode: 0o600 });
+      appendFileSync(stderrFile, "", { mode: 0o600 });
+      appendFileSync(combinedFile, "", { mode: 0o600 });
+      stdoutLog = new BoundedLogFile(stdoutFile, LOG_FILE_OPTIONS);
+      stderrLog = new BoundedLogFile(stderrFile, LOG_FILE_OPTIONS);
+      combinedLog = new CombinedLogWriter(combinedFile, LOG_FILE_OPTIONS);
+    } catch (error) {
+      this.removeProcessLogFiles(stdoutFile, stderrFile, combinedFile);
+      throw error;
+    }
 
-    const stdoutLog = new BoundedLogFile(stdoutFile, LOG_FILE_OPTIONS);
-    const stderrLog = new BoundedLogFile(stderrFile, LOG_FILE_OPTIONS);
-    const combinedLog = new CombinedLogWriter(combinedFile, LOG_FILE_OPTIONS);
-    const child = spawnCommand(command, cwd, this.getConfiguredShellPath());
+    let child: ReturnType<typeof spawnCommand>;
+    try {
+      child = spawnCommand(command, cwd, this.getConfiguredShellPath());
+    } catch (error) {
+      this.removeProcessLogFiles(stdoutFile, stderrFile, combinedFile);
+      throw error;
+    }
+    let trackingStarted = false;
 
     const managed: ManagedProcess = {
       id,
@@ -185,9 +219,11 @@ export class ProcessManager {
       leaderExitCode: null,
       leaderExitSignal: null,
       processError: false,
+      closeWaiters: new Set(),
     };
 
     child.stdout?.on("data", (data: Buffer) => {
+      if (!trackingStarted) return;
       try {
         stdoutLog.append(data);
         combinedLog.write("stdout", data);
@@ -196,6 +232,7 @@ export class ProcessManager {
       }
     });
     child.stdout?.on("end", () => {
+      if (!trackingStarted) return;
       try {
         combinedLog.end("stdout");
       } catch {
@@ -204,6 +241,7 @@ export class ProcessManager {
     });
 
     child.stderr?.on("data", (data: Buffer) => {
+      if (!trackingStarted) return;
       try {
         stderrLog.append(data);
         combinedLog.write("stderr", data);
@@ -212,6 +250,7 @@ export class ProcessManager {
       }
     });
     child.stderr?.on("end", () => {
+      if (!trackingStarted) return;
       try {
         combinedLog.end("stderr");
       } catch {
@@ -220,7 +259,7 @@ export class ProcessManager {
     });
 
     child.on("close", (code, signal) => {
-      if (managed.leaderClosed) return;
+      if (!trackingStarted || managed.leaderClosed) return;
 
       try {
         combinedLog.end("stdout");
@@ -231,10 +270,13 @@ export class ProcessManager {
       managed.leaderClosed = true;
       managed.leaderExitCode = code ?? (managed.processError ? -1 : null);
       managed.leaderExitSignal = signal;
+      for (const waiter of managed.closeWaiters) waiter();
+      managed.closeWaiters.clear();
       this.finalizeIfGroupEnded(managed);
     });
 
     child.on("error", (err) => {
+      if (!trackingStarted) return;
       try {
         stderrLog.append(`Process error: ${err.message}\n`);
       } catch {
@@ -247,9 +289,11 @@ export class ProcessManager {
       managed.exitCode = -1;
       managed.success = false;
       managed.endTime = Date.now();
+      this.removeProcessLogFiles(stdoutFile, stderrFile, combinedFile);
       throw new Error("Failed to spawn process: no process ID was assigned");
     }
 
+    trackingStarted = true;
     child.unref();
     this.processes.set(id, managed);
     this.emit({ type: "process_started", info: this.toProcessInfo(managed) });
@@ -356,6 +400,34 @@ export class ProcessManager {
     });
   }
 
+  private waitForLeaderClose(
+    managed: ManagedProcess,
+    milliseconds: number,
+    signal?: AbortSignal,
+  ): Promise<"closed" | "elapsed" | "aborted"> {
+    if (managed.leaderClosed) return Promise.resolve("closed");
+    if (signal?.aborted) return Promise.resolve("aborted");
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (result: "closed" | "elapsed" | "aborted") => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        managed.closeWaiters.delete(onClose);
+        signal?.removeEventListener("abort", onAbort);
+        resolve(result);
+      };
+      const onClose = () => finish("closed");
+      const onAbort = () => finish("aborted");
+      const timer = setTimeout(() => finish("elapsed"), milliseconds);
+      managed.closeWaiters.add(onClose);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (managed.leaderClosed) onClose();
+      else if (signal?.aborted) onAbort();
+    });
+  }
+
   async kill(
     id: string,
     opts?: {
@@ -404,6 +476,11 @@ export class ProcessManager {
     const timeoutMs = opts?.timeoutMs ?? 3000;
     const previousStatus = managed.status;
     const previousNotifyOnEnd = managed.triggerAgentTurnOnEnd;
+    const restoreLiveState = () => {
+      if (!LIVE_STATUSES.has(managed.status)) return;
+      managed.triggerAgentTurnOnEnd = previousNotifyOnEnd;
+      this.transition(managed, previousStatus);
+    };
 
     managed.triggerAgentTurnOnEnd = opts?.notifyOnEnd === true;
     this.transition(managed, "terminating");
@@ -414,8 +491,7 @@ export class ProcessManager {
     } catch (error) {
       const err = error as NodeJS.ErrnoException;
       if (err.code !== "ESRCH") {
-        managed.triggerAgentTurnOnEnd = previousNotifyOnEnd;
-        this.transition(managed, previousStatus);
+        restoreLiveState();
         return {
           ok: false,
           info: this.toProcessInfo(managed),
@@ -432,6 +508,7 @@ export class ProcessManager {
     }
 
     if (waitResult === "aborted") {
+      restoreLiveState();
       return {
         ok: false,
         info: this.toProcessInfo(managed),
@@ -448,7 +525,46 @@ export class ProcessManager {
       };
     }
 
+    if (!managed.leaderClosed) {
+      const closeResult = await this.waitForLeaderClose(
+        managed,
+        CHILD_CLOSE_WAIT_MS,
+        abortSignal,
+      );
+      if (closeResult !== "closed") {
+        if (!LIVE_STATUSES.has(managed.status)) {
+          return { ok: true, info: this.toProcessInfo(managed) };
+        }
+        restoreLiveState();
+        return {
+          ok: false,
+          info: this.toProcessInfo(managed),
+          reason: closeResult === "aborted" ? "cancelled" : "error",
+        };
+      }
+    }
+
+    if (!LIVE_STATUSES.has(managed.status)) {
+      return { ok: true, info: this.toProcessInfo(managed) };
+    }
+    if (isProcessGroupAlive(managed.pid)) {
+      this.transition(managed, "terminate_timeout");
+      return {
+        ok: false,
+        info: this.toProcessInfo(managed),
+        reason: "timeout",
+      };
+    }
+
     this.finalizeEndedProcess(managed);
+    if (LIVE_STATUSES.has(managed.status)) {
+      restoreLiveState();
+      return {
+        ok: false,
+        info: this.toProcessInfo(managed),
+        reason: "error",
+      };
+    }
     return { ok: true, info: this.toProcessInfo(managed) };
   }
 

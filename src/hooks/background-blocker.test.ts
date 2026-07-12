@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { analyzeManagedCommand } from "./background-blocker";
+import {
+  analyzeManagedCommand,
+  hasDetachedExecution,
+} from "./background-blocker";
 
 describe("analyzeManagedCommand", () => {
   it("blocks explicit backgrounding", () => {
@@ -158,6 +161,16 @@ describe("analyzeManagedCommand", () => {
     expect(analyzeManagedCommand("ssh -n host 'ls /tmp' ")).toBeUndefined();
     expect(analyzeManagedCommand("./developers-guide.sh")).toBeUndefined();
     expect(analyzeManagedCommand("git status")).toBeUndefined();
+  });
+
+  it("identifies detached container execution for process-start validation", () => {
+    expect(hasDetachedExecution("docker compose up -d api")).toBe(true);
+    expect(
+      hasDetachedExecution("docker --context prod compose up --detach api"),
+    ).toBe(true);
+    expect(hasDetachedExecution("docker run -d nginx")).toBe(true);
+    expect(hasDetachedExecution("podman run --detach nginx")).toBe(true);
+    expect(hasDetachedExecution("docker compose up api")).toBe(false);
   });
 
   it("blocks ssh port-forward style invocations", () => {

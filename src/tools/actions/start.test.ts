@@ -80,6 +80,26 @@ describe("executeStart", () => {
     expect(result.details.message).toContain("exited during startup");
   });
 
+  it("rejects commands that escape process-group supervision", () => {
+    const manager = { start: vi.fn() } as const;
+
+    const daemonResult = executeStart(
+      { name: "daemon", command: "setsid sleep 600 >/dev/null 2>&1 &" },
+      manager as never,
+      { cwd: process.cwd() } as never,
+    );
+    const detachedResult = executeStart(
+      { name: "compose", command: "docker compose up -d api" },
+      manager as never,
+      { cwd: process.cwd() } as never,
+    );
+
+    expect(daemonResult.details.success).toBe(false);
+    expect(daemonResult.details.message).toContain("stay in the foreground");
+    expect(detachedResult.details.success).toBe(false);
+    expect(manager.start).not.toHaveBeenCalled();
+  });
+
   it("returns a friendly error when process startup throws", () => {
     const manager = {
       start: vi.fn().mockImplementation(() => {

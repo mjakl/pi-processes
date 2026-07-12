@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -125,7 +125,7 @@ describe("ProcessManager", () => {
     const cancelled = await killPromise;
 
     expect(cancelled).toMatchObject({ ok: false, reason: "cancelled" });
-    expect(manager.get(second.id)?.status).toBe("terminating");
+    expect(manager.get(second.id)?.status).toBe("running");
     expect(mocks.killProcessGroup).toHaveBeenCalledTimes(1);
   });
 
@@ -228,6 +228,62 @@ describe("ProcessManager", () => {
     });
   });
 
+  it("does not let listener failures corrupt process lifecycle", () => {
+    const laterListener = vi.fn();
+    manager.onEvent(() => {
+      throw new Error("broken UI listener");
+    });
+    manager.onEvent(laterListener);
+
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+
+    expect(proc.status).toBe("running");
+    expect(manager.get(proc.id)?.status).toBe("running");
+    expect(laterListener).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "process_started" }),
+    );
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it("does not resurrect a process that closes during cancellation", async () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    const controller = new AbortController();
+    const killPromise = manager.kill(proc.id, {
+      signal: "SIGTERM",
+      timeoutMs: 100,
+      abortSignal: controller.signal,
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+    controller.signal.addEventListener("abort", () => {
+      children[0].emit("close", 0, null);
+    });
+    controller.abort();
+    const result = await killPromise;
+
+    expect(result.ok).toBe(true);
+    expect(manager.get(proc.id)).toMatchObject({
+      status: "killed",
+      success: false,
+    });
+  });
+
+  it("does not report a kill as successful before child close", async () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    const killPromise = manager.kill(proc.id, {
+      signal: "SIGTERM",
+      timeoutMs: 100,
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(manager.get(proc.id)?.status).toBe("terminating");
+    await vi.advanceTimersByTimeAsync(500);
+    const result = await killPromise;
+
+    expect(result).toMatchObject({ ok: false, reason: "error" });
+    expect(manager.get(proc.id)?.status).toBe("running");
+  });
+
   it("handles PID-less spawn failures without an unhandled child error", () => {
     const child = new FakeChildProcess();
     mocks.spawnCommand.mockImplementationOnce(() => {
@@ -242,7 +298,25 @@ describe("ProcessManager", () => {
     );
     expect(manager.list()).toEqual([]);
     expect(listener).not.toHaveBeenCalled();
+    const logDir = (manager as unknown as { logDir: string }).logDir;
+    expect(readdirSync(logDir)).toEqual([]);
     expect(() => child.emit("error", new Error("spawn ENOENT"))).not.toThrow();
+    expect(() => child.emit("close", null, null)).not.toThrow();
+    expect(readdirSync(logDir)).toEqual([]);
+    expect(manager.list()).toEqual([]);
+  });
+
+  it("removes log files after synchronous spawn failures", () => {
+    mocks.spawnCommand.mockImplementationOnce(() => {
+      throw new Error("shell resolution failed");
+    });
+
+    expect(() => manager.start("server", "pnpm dev", process.cwd())).toThrow(
+      "shell resolution failed",
+    );
+
+    const logDir = (manager as unknown as { logDir: string }).logDir;
+    expect(readdirSync(logDir)).toEqual([]);
     expect(manager.list()).toEqual([]);
   });
 

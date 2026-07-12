@@ -139,6 +139,7 @@ process clear
 Field rules:
 
 - `start` requires `command` and `name`.
+- A started command must remain in the foreground. Do not include `&`, `nohup`, `setsid`, `coproc`, or other daemonizing wrappers inside the command; the manager supervises the foreground process group.
 - `output`, `logs`, and `kill` require `id`.
 - `kill` accepts `force=true` to send `SIGKILL` instead of `SIGTERM`.
 - `start` accepts `continueAfterStart=true` only when the agent has immediate, specific, non-polling work to do after startup.

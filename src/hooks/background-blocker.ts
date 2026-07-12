@@ -63,6 +63,14 @@ const SHELL_OPTIONS_WITH_VALUE = new Set([
   "--init-file",
   "--rcfile",
 ]);
+const CONTAINER_OPTIONS_WITH_VALUE = new Set([
+  "--config",
+  "--connection",
+  "--context",
+  "-h",
+  "--host",
+  "--log-level",
+]);
 const SUDO_OPTIONS_WITH_VALUE = new Set([
   "-c",
   "-d",
@@ -140,6 +148,24 @@ function analyzeManagedCommandAtDepth(
     return decision;
   } catch {
     return analyzeManagedCommandFallback(command);
+  }
+}
+
+export function hasDetachedExecution(command: string): boolean {
+  try {
+    const { ast } = parse(command);
+    let detached = false;
+    walkCommands(ast, (simpleCommand) => {
+      const words =
+        simpleCommand.words?.map(wordToString).filter(Boolean) ?? [];
+      detached = isDetachedContainerCommand(words);
+      return detached;
+    });
+    return detached;
+  } catch {
+    return /\b(?:docker(?:-compose)?|podman)\b[^\n]*(?:\s-d(?:\s|$)|--detach(?:=true)?\b)/i.test(
+      command,
+    );
   }
 }
 
@@ -221,6 +247,43 @@ function classifySimpleCommand(
   }
 
   return undefined;
+}
+
+function isDetachedContainerCommand(words: string[]): boolean {
+  if (words.length === 0) return false;
+  const name = basename(words[0]).toLowerCase();
+  const args = words.slice(1).map((arg) => arg.toLowerCase());
+
+  if (name === "docker-compose") {
+    return args.includes("up") && hasDetachFlag(args);
+  }
+  if (name !== "docker" && name !== "podman") return false;
+
+  const invocation = stripContainerOptions(args);
+  if (invocation[0] === "compose") {
+    return invocation.includes("up") && hasDetachFlag(invocation);
+  }
+  return invocation[0] === "run" && hasDetachFlag(invocation.slice(1));
+}
+
+function stripContainerOptions(args: string[]): string[] {
+  let index = 0;
+  while (index < args.length && args[index].startsWith("-")) {
+    const option = args[index].split("=", 1)[0];
+    const consumesValue =
+      CONTAINER_OPTIONS_WITH_VALUE.has(option) && !args[index].includes("=");
+    index += consumesValue ? 2 : 1;
+  }
+  return args.slice(index);
+}
+
+function hasDetachFlag(args: string[]): boolean {
+  return args.some(
+    (arg) =>
+      arg === "--detach" ||
+      arg === "--detach=true" ||
+      (arg.startsWith("-") && !arg.startsWith("--") && arg.includes("d")),
+  );
 }
 
 function isLongRunningCommand(

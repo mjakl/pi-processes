@@ -1,5 +1,9 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ExecuteResult } from "../../constants";
+import {
+  analyzeManagedCommand,
+  hasDetachedExecution,
+} from "../../hooks/background-blocker";
 import type { ProcessManager } from "../../manager";
 import { formatTimestamp, sanitizeLine } from "../../utils";
 
@@ -31,6 +35,22 @@ export function executeStart(
         action: "start",
         success: false,
         message: "Missing required parameter: command",
+      },
+    };
+  }
+
+  if (
+    analyzeManagedCommand(params.command)?.kind === "background" ||
+    hasDetachedExecution(params.command)
+  ) {
+    const message =
+      "Process commands must stay in the foreground; remove &, nohup, setsid, or other daemonizing wrappers.";
+    return {
+      content: [{ type: "text", text: message }],
+      details: {
+        action: "start",
+        success: false,
+        message,
       },
     };
   }
