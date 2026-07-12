@@ -27,9 +27,6 @@
     "!src/**/*.test.ts",
     "README.md"
   ],
-  "dependencies": {
-    "@aliou/sh": "^0.1.0"
-  },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
@@ -66,5 +63,8 @@
     "typebox": {
       "optional": true
     }
+  },
+  "dependencies": {
+    "unbash": "^4.0.2"
   }
 }

@@ -7,12 +7,15 @@
  */
 
 import { basename } from "node:path";
-import { type Program, parse, type SimpleCommand } from "@aliou/sh";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   collectFunctionDeclarations,
+  commandToWords,
   hasBackgroundStatement,
   hasUnescapedCommandSubstitution,
+  parseShell,
+  type ShellProgram,
+  type SimpleCommand,
   walkCommands,
   walkEmbeddedShellText,
   wordToString,
@@ -244,18 +247,18 @@ function analyzeManagedCommandAtDepth(
   if (depth > 8) return undefined;
 
   try {
-    const { ast } = parse(command);
-    return analyzeManagedProgram(ast, command, depth);
+    const program = parseShell(command);
+    return analyzeManagedProgram(program, command, depth);
   } catch {
     return analyzeManagedCommandFallback(command);
   }
 }
 
 function analyzeManagedProgram(
-  ast: Program,
+  ast: ShellProgram,
   source: string,
   depth: number,
-  inheritedFunctions = new Map<string, Program["body"]>(),
+  inheritedFunctions = new Map<string, ShellProgram>(),
 ): ManagedCommandDecision | undefined {
   if (hasBackgroundStatement(ast)) {
     return {
@@ -270,13 +273,13 @@ function analyzeManagedProgram(
   }
   let decision: ManagedCommandDecision | undefined;
   walkCommands(ast, (cmd) => {
-    const words = cmd.words?.map(wordToString).filter(Boolean) ?? [];
+    const words = commandToWords(cmd).filter(Boolean);
     if (words.length === 0) return false;
 
     const functionBody = functions.get(words[0]);
     if (functionBody && depth < 8) {
       decision = analyzeManagedProgram(
-        { type: "Program", body: functionBody },
+        functionBody,
         words[0],
         depth + 1,
         functions,
@@ -333,13 +336,14 @@ function getShellStdinCommand(
     if (SHELL_OPTIONS_WITH_VALUE.has(option) && !option.includes("=")) index++;
   }
 
-  const inputRedirects =
-    command.redirects?.filter((redirect) =>
-      ["<<", "<<-", "<<<"].includes(redirect.op),
-    ) ?? [];
+  const inputRedirects = command.redirects.filter((redirect) =>
+    ["<<", "<<-", "<<<"].includes(redirect.operator),
+  );
   const redirect = inputRedirects.at(-1);
-  const input = redirect?.heredoc ?? redirect?.target;
-  return input ? wordToString(input) : undefined;
+  return redirect?.body
+    ? wordToString(redirect.body)
+    : (redirect?.content ??
+        (redirect?.target ? wordToString(redirect.target) : undefined));
 }
 
 export function hasDetachedExecution(command: string): boolean {
@@ -349,11 +353,10 @@ export function hasDetachedExecution(command: string): boolean {
 function hasDetachedExecutionAtDepth(command: string, depth: number): boolean {
   if (depth > 8) return false;
   try {
-    const { ast } = parse(command);
+    const program = parseShell(command);
     let detached = false;
-    walkCommands(ast, (simpleCommand) => {
-      const words =
-        simpleCommand.words?.map(wordToString).filter(Boolean) ?? [];
+    walkCommands(program, (simpleCommand) => {
+      const words = commandToWords(simpleCommand).filter(Boolean);
       detached = commandWordsHaveDetachedExecution(words, depth);
       return detached;
     });
@@ -1022,12 +1025,12 @@ function analyzeManagedCommandFallback(
 
 function findFirstCommandName(
   command: string,
-  ast: Program,
+  ast: ShellProgram,
 ): string | undefined {
   let suggested: string | undefined;
 
   walkCommands(ast, (cmd) => {
-    const words = cmd.words?.map(wordToString).filter(Boolean) ?? [];
+    const words = commandToWords(cmd).filter(Boolean);
     if (words.length === 0) return false;
     suggested = suggestProcessName(words);
     return true;

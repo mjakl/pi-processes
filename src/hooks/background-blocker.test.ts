@@ -123,6 +123,15 @@ describe("analyzeManagedCommand", () => {
       kind: "long_running",
       suggestedName: "dev",
     });
+    expect(analyzeManagedCommand("x[$(pnpm dev)]=foo")).toMatchObject({
+      kind: "long_running",
+    });
+    expect(
+      analyzeManagedCommand("declare -a x=([$(pnpm dev)]=foo)"),
+    ).toMatchObject({ kind: "long_running" });
+    expect(
+      analyzeManagedCommand("bash -O extglob -c 'echo @($(pnpm dev)|x)'"),
+    ).toMatchObject({ kind: "long_running" });
   });
 
   it("analyzes shell stdin and invoked function bodies", () => {
@@ -278,6 +287,12 @@ describe("analyzeManagedCommand", () => {
     ).toBeUndefined();
     expect(
       analyzeManagedCommand("if false; then sleep 999 & fi"),
+    ).toBeUndefined();
+    expect(
+      analyzeManagedCommand("if ! true; then pnpm dev; fi"),
+    ).toBeUndefined();
+    expect(
+      analyzeManagedCommand("if ! true; then sleep 999 & fi"),
     ).toBeUndefined();
     expect(
       analyzeManagedCommand("cat <<'EOF'\n$(pnpm dev)\nEOF"),

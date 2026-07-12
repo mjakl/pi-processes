@@ -1,71 +1,72 @@
-// Shell AST helpers. Duplicated from pi-toolchain since cross-extension imports are not allowed.
+import {
+  type ArithmeticExpression,
+  type Command,
+  type Node,
+  parse,
+  type Redirect,
+  type Script,
+  type Function as ShellFunction,
+  type Statement,
+  type TestExpression,
+  type Word,
+  type WordPart,
+} from "unbash";
 
-import type {
-  ArrayExpr,
-  Assignment,
-  Command,
-  FunctionDecl,
-  Program,
-  Redirect,
-  SimpleCommand,
-  Statement,
-  Word,
-  WordPart,
-} from "@aliou/sh";
-
-/** Resolve a shell word to the literal text available in its AST. */
-export function wordToString(word: Word): string {
-  return word.parts.map(partToString).join("");
+export interface ShellProgram {
+  script: Script;
+  source: string;
 }
 
-function partToString(part: WordPart): string {
-  switch (part.type) {
-    case "Literal":
-      return part.value;
-    case "SglQuoted":
-      return part.value;
-    case "DblQuoted":
-      return part.parts.map(partToString).join("");
-    case "ParamExp":
-      return part.short
-        ? `$${part.param.value}`
-        : `\${${part.param.value}${part.op ?? ""}${part.value ? wordToString(part.value) : ""}}`;
-    case "CmdSubst":
-      return "$(...)";
-    case "ArithExp":
-      return `$((${part.expr}))`;
-    case "ProcSubst":
-      return `${part.op}(...)`;
+export type SimpleCommand = Command;
+
+export function parseShell(source: string): ShellProgram {
+  const script = parse(source);
+  if (script.errors?.length) {
+    throw new Error(script.errors[0].message);
   }
+  return { script, source };
 }
 
-/** Walk every SimpleCommand, including commands inside word substitutions. */
+/** Resolve a shell word to its semantic literal value. */
+export function wordToString(word: Word): string {
+  return word.value;
+}
+
+export function commandToWords(command: Command): string[] {
+  return command.name
+    ? [wordToString(command.name), ...command.suffix.map(wordToString)]
+    : [];
+}
+
+/** Walk every executed simple command, including substitutions. */
 export function walkCommands(
-  node: Program,
-  callback: (cmd: SimpleCommand) => boolean | undefined,
+  program: ShellProgram,
+  callback: (command: Command) => boolean | undefined,
 ): void {
-  walkProgram(node, { command: callback });
+  walkProgram(program, { command: callback });
 }
 
 /** Collect function declarations reached by the program's control flow. */
 export function collectFunctionDeclarations(
-  node: Program,
-): Map<string, Statement[]> {
-  const functions = new Map<string, Statement[]>();
-  walkProgram(node, {
+  program: ShellProgram,
+): Map<string, ShellProgram> {
+  const functions = new Map<string, ShellProgram>();
+  walkProgram(program, {
     functionDecl: (declaration) => {
-      functions.set(declaration.name, declaration.body);
+      functions.set(
+        wordToString(declaration.name),
+        nodeToProgram(declaration.body, program.source),
+      );
     },
   });
   return functions;
 }
 
 /** Return true when any executed statement is asynchronous/backgrounded. */
-export function hasBackgroundStatement(node: Program): boolean {
-  return walkProgram(node, {
-    statement: (statement) =>
-      statement.background === true ||
-      statement.command.type === "CoprocClause",
+export function hasBackgroundStatement(program: ShellProgram): boolean {
+  return walkProgram(program, {
+    statement: (statement) => statement.background === true,
+    coproc: () => true,
   });
 }
 
@@ -88,260 +89,384 @@ export function hasUnescapedCommandSubstitution(text: string): boolean {
   return false;
 }
 
-/** Walk shell text embedded in arithmetic, parameter expansion, and heredocs. */
+/** Walk raw shell text in parser-limited arithmetic/expansion fields. */
 export function walkEmbeddedShellText(
-  node: Program,
+  program: ShellProgram,
   callback: (text: string) => boolean | undefined,
 ): void {
-  walkProgram(node, { embeddedText: callback });
+  walkProgram(program, { embeddedText: callback });
 }
 
 interface WalkCallbacks {
-  command?: (command: SimpleCommand) => boolean | undefined;
+  command?: (command: Command) => boolean | undefined;
   statement?: (statement: Statement) => boolean | undefined;
   embeddedText?: (text: string) => boolean | undefined;
-  functionDecl?: (declaration: FunctionDecl) => void;
+  functionDecl?: (declaration: ShellFunction) => void;
+  coproc?: () => boolean | undefined;
 }
 
-function walkProgram(node: Program, callbacks: WalkCallbacks): boolean {
-  return walkStatements(node.body, callbacks);
-}
-
-function walkStatement(
-  statement: Statement,
-  callbacks: WalkCallbacks,
-): boolean {
-  if (callbacks.statement?.(statement) === true) return true;
-  return walkCommand(statement.command, callbacks);
+function walkProgram(program: ShellProgram, callbacks: WalkCallbacks): boolean {
+  return walkStatements(program.script.commands, callbacks, program.source);
 }
 
 function walkStatements(
   statements: Statement[],
   callbacks: WalkCallbacks,
+  source: string,
 ): boolean {
   for (const statement of statements) {
-    if (walkStatement(statement, callbacks)) return true;
+    if (walkStatement(statement, callbacks, source)) return true;
   }
   return false;
 }
 
-function walkCommand(command: Command, callbacks: WalkCallbacks): boolean {
-  switch (command.type) {
-    case "SimpleCommand":
+function walkStatement(
+  statement: Statement,
+  callbacks: WalkCallbacks,
+  source: string,
+): boolean {
+  return (
+    callbacks.statement?.(statement) === true ||
+    walkRedirects(statement.redirects, callbacks, source) ||
+    walkNode(statement.command, callbacks, source)
+  );
+}
+
+function walkNode(
+  node: Node,
+  callbacks: WalkCallbacks,
+  source: string,
+): boolean {
+  switch (node.type) {
+    case "Statement":
+      return walkStatement(node, callbacks, source);
+
+    case "Command":
       return (
-        callbacks.command?.(command) === true ||
-        walkWords(command.words, callbacks) ||
-        walkAssignments(command.assignments, callbacks) ||
-        walkRedirects(command.redirects, callbacks)
+        callbacks.command?.(node) === true ||
+        walkWord(node.name, callbacks, source) ||
+        walkWords(node.suffix, callbacks, source) ||
+        node.prefix.some(
+          (assignment) =>
+            Boolean(
+              assignment.index &&
+                hasUnescapedCommandSubstitution(assignment.index) &&
+                callbacks.embeddedText?.(assignment.index) === true,
+            ) ||
+            walkWord(assignment.value, callbacks, source) ||
+            walkWords(assignment.array, callbacks, source),
+        ) ||
+        walkRedirects(node.redirects, callbacks, source)
       );
 
     case "Pipeline":
-      return walkStatements(command.commands, callbacks);
-
-    case "Logical":
-      return (
-        walkStatement(command.left, callbacks) ||
-        walkStatement(command.right, callbacks)
+    case "AndOr":
+      return node.commands.some((command) =>
+        walkNode(command, callbacks, source),
       );
 
-    case "Subshell":
-    case "Block":
-      return walkStatements(command.body, callbacks);
-
-    case "IfClause": {
-      const condition = getStaticCondition(command.cond);
-      if (condition === true) {
-        return (
-          walkStatements(command.cond, callbacks) ||
-          walkStatements(command.then, callbacks)
-        );
-      }
-      if (condition === false) {
-        return (
-          walkStatements(command.cond, callbacks) ||
-          (command.else ? walkStatements(command.else, callbacks) : false)
-        );
+    case "If": {
+      const condition = getStaticCondition(node.clause.commands);
+      if (walkStatements(node.clause.commands, callbacks, source)) return true;
+      if (condition !== false && walkNode(node.then, callbacks, source)) {
+        return true;
       }
       return (
-        walkStatements(command.cond, callbacks) ||
-        walkStatements(command.then, callbacks) ||
-        (command.else ? walkStatements(command.else, callbacks) : false)
+        condition !== true &&
+        node.else !== undefined &&
+        walkNode(node.else, callbacks, source)
       );
     }
 
-    case "ForClause":
-    case "SelectClause":
+    case "For":
+    case "Select":
       return (
-        walkWords(command.items, callbacks) ||
-        walkStatements(command.body, callbacks)
+        walkWords(node.wordlist, callbacks, source) ||
+        walkNode(node.body, callbacks, source)
       );
 
-    case "WhileClause":
+    case "ArithmeticFor": {
+      const header = source.slice(node.pos, node.body.pos);
       return (
-        walkStatements(command.cond, callbacks) ||
-        walkStatements(command.body, callbacks)
+        (hasUnescapedCommandSubstitution(header) &&
+          callbacks.embeddedText?.(header) === true) ||
+        walkArithmetic(node.initialize, callbacks, source) ||
+        walkArithmetic(node.test, callbacks, source) ||
+        walkArithmetic(node.update, callbacks, source) ||
+        walkNode(node.body, callbacks, source)
+      );
+    }
+
+    case "While":
+      return (
+        walkNode(node.clause, callbacks, source) ||
+        walkNode(node.body, callbacks, source)
       );
 
-    case "CaseClause":
-      if (walkWord(command.word, callbacks)) return true;
-      for (const item of command.items) {
-        if (
-          walkWords(item.patterns, callbacks) ||
-          walkStatements(item.body, callbacks)
-        ) {
-          return true;
-        }
-      }
-      return false;
+    case "Function":
+      callbacks.functionDecl?.(node);
+      // A declaration does not execute its body until invoked.
+      return walkRedirects(node.redirects, callbacks, source);
 
-    case "FunctionDecl":
-      callbacks.functionDecl?.(command);
-      // Declaring a function does not execute its body.
-      return false;
+    case "Subshell":
+    case "BraceGroup":
+      return walkNode(node.body, callbacks, source);
 
-    case "TimeClause":
-      return walkStatement(command.command, callbacks);
+    case "CompoundList":
+      return walkStatements(node.commands, callbacks, source);
 
-    case "CoprocClause":
-      return walkStatement(command.body, callbacks);
-
-    case "CStyleLoop":
-      return (
-        [command.init, command.cond, command.post].some(
-          (expression) =>
-            expression !== undefined &&
-            callbacks.embeddedText?.(expression) === true,
-        ) || walkStatements(command.body, callbacks)
+    case "Case":
+      if (walkWord(node.word, callbacks, source)) return true;
+      return node.items.some(
+        (item) =>
+          walkWords(item.pattern, callbacks, source) ||
+          walkNode(item.body, callbacks, source),
       );
 
-    case "TestClause":
-      return walkWords(command.expr, callbacks);
-
-    case "DeclClause":
+    case "Coproc":
       return (
-        walkWords(command.args, callbacks) ||
-        walkAssignments(command.assigns, callbacks) ||
-        walkRedirects(command.redirects, callbacks)
+        callbacks.coproc?.() === true ||
+        walkNode(node.body, callbacks, source) ||
+        walkRedirects(node.redirects, callbacks, source)
       );
 
-    case "LetClause":
-      return (
-        walkWords(command.exprs, callbacks) ||
-        walkRedirects(command.redirects, callbacks)
-      );
+    case "TestCommand":
+      return walkTestExpression(node.expression, callbacks, source);
 
-    case "ArithCmd":
-      return callbacks.embeddedText?.(command.expr) === true;
+    case "ArithmeticCommand":
+      return (
+        (hasUnescapedCommandSubstitution(node.body) &&
+          callbacks.embeddedText?.(node.body) === true) ||
+        walkArithmetic(node.expression, callbacks, source)
+      );
   }
 }
 
 function getStaticCondition(statements: Statement[]): boolean | undefined {
   if (statements.length !== 1) return undefined;
   const statement = statements[0];
-  if (statement.background || statement.command.type !== "SimpleCommand") {
-    return undefined;
-  }
+  if (statement.background || statement.redirects.length > 0) return undefined;
 
-  const command = statement.command;
+  let commandNode: Node = statement.command;
+  let negated = false;
   if (
-    command.assignments?.length ||
-    command.redirects?.length ||
-    command.words?.length !== 1
+    commandNode.type === "Pipeline" &&
+    commandNode.commands.length === 1 &&
+    commandNode.operators.length === 0
+  ) {
+    negated = commandNode.negated === true;
+    commandNode = commandNode.commands[0];
+  }
+  if (commandNode.type !== "Command") return undefined;
+
+  const command = commandNode;
+  if (
+    command.prefix.length > 0 ||
+    command.redirects.length > 0 ||
+    command.suffix.length > 0 ||
+    !command.name
   ) {
     return undefined;
   }
 
-  const name = wordToString(command.words[0]);
+  const name = wordToString(command.name);
   const result =
     name === "true" || name === ":"
       ? true
       : name === "false"
         ? false
         : undefined;
-  return result === undefined || !statement.negated ? result : !result;
+  return result === undefined || !negated ? result : !result;
 }
 
 function walkWords(
   words: Word[] | undefined,
   callbacks: WalkCallbacks,
+  source: string,
 ): boolean {
-  return words?.some((word) => walkWord(word, callbacks)) ?? false;
+  return words?.some((word) => walkWord(word, callbacks, source)) ?? false;
 }
 
-function walkWord(word: Word, callbacks: WalkCallbacks): boolean {
-  return word.parts.some((part) => walkWordPart(part, callbacks));
+function walkWord(
+  word: Word | undefined,
+  callbacks: WalkCallbacks,
+  source: string,
+): boolean {
+  if (!word) return false;
+  if (word.parts) {
+    return word.parts.some((part) => walkWordPart(part, callbacks, source));
+  }
+  return (
+    hasUnescapedCommandSubstitution(word.text) &&
+    callbacks.embeddedText?.(word.text) === true
+  );
 }
 
-function walkWordPart(part: WordPart, callbacks: WalkCallbacks): boolean {
+function walkWordPart(
+  part: WordPart,
+  callbacks: WalkCallbacks,
+  source: string,
+): boolean {
   switch (part.type) {
-    case "DblQuoted":
-      return part.parts.some((nested) => walkWordPart(nested, callbacks));
-    case "ParamExp": {
-      if (!part.value) return false;
-      const text = wordToString(part.value);
+    case "DoubleQuoted":
+    case "LocaleString":
+      return part.parts.some((nested) =>
+        walkWordPart(nested, callbacks, source),
+      );
+
+    case "ParameterExpansion": {
+      const operandText = part.operand?.text ?? "";
       return (
-        (hasUnescapedCommandSubstitution(text) &&
-          callbacks.embeddedText?.(text) === true) ||
-        walkWord(part.value, callbacks)
+        (hasUnescapedCommandSubstitution(operandText) &&
+          callbacks.embeddedText?.(operandText) === true) ||
+        walkWord(part.operand, callbacks, source) ||
+        walkWord(part.slice?.offset, callbacks, source) ||
+        walkWord(part.slice?.length, callbacks, source) ||
+        walkWord(part.replace?.pattern, callbacks, source) ||
+        walkWord(part.replace?.replacement, callbacks, source)
       );
     }
-    case "CmdSubst":
-    case "ProcSubst":
-      return walkStatements(part.stmts, callbacks);
-    case "ArithExp":
-      return callbacks.embeddedText?.(part.expr) === true;
+
+    case "CommandExpansion":
+    case "ProcessSubstitution":
+      return part.script
+        ? walkStatements(part.script.commands, callbacks, source)
+        : Boolean(
+            part.inner &&
+              hasUnescapedCommandSubstitution(part.text) &&
+              callbacks.embeddedText?.(part.inner) === true,
+          );
+
+    case "ArithmeticExpansion":
+      return (
+        walkArithmetic(part.expression, callbacks, source) ||
+        (part.expression === undefined &&
+          hasUnescapedCommandSubstitution(part.text) &&
+          callbacks.embeddedText?.(part.text) === true)
+      );
+
+    case "ExtendedGlob":
+      return (
+        hasUnescapedCommandSubstitution(part.pattern) &&
+        callbacks.embeddedText?.(part.pattern) === true
+      );
+
     case "Literal":
-    case "SglQuoted":
+    case "SingleQuoted":
+    case "AnsiCQuoted":
+    case "SimpleExpansion":
+    case "BraceExpansion":
       return false;
   }
 }
 
-function walkAssignments(
-  assignments: Assignment[] | undefined,
+function walkArithmetic(
+  expression: ArithmeticExpression | undefined,
   callbacks: WalkCallbacks,
+  source: string,
 ): boolean {
-  return (
-    assignments?.some(
-      (assignment) =>
-        (assignment.value ? walkWord(assignment.value, callbacks) : false) ||
-        (assignment.array
-          ? walkArrayExpression(assignment.array, callbacks)
-          : false),
-    ) ?? false
-  );
+  if (!expression) return false;
+  switch (expression.type) {
+    case "ArithmeticBinary":
+      return (
+        walkArithmetic(expression.left, callbacks, source) ||
+        walkArithmetic(expression.right, callbacks, source)
+      );
+    case "ArithmeticUnary":
+      return walkArithmetic(expression.operand, callbacks, source);
+    case "ArithmeticTernary":
+      return (
+        walkArithmetic(expression.test, callbacks, source) ||
+        walkArithmetic(expression.consequent, callbacks, source) ||
+        walkArithmetic(expression.alternate, callbacks, source)
+      );
+    case "ArithmeticGroup":
+      return walkArithmetic(expression.expression, callbacks, source);
+    case "ArithmeticCommandExpansion":
+      return expression.script
+        ? walkStatements(expression.script.commands, callbacks, source)
+        : Boolean(
+            expression.inner &&
+              callbacks.embeddedText?.(expression.inner) === true,
+          );
+    case "ArithmeticWord":
+      return (
+        hasUnescapedCommandSubstitution(expression.value) &&
+        callbacks.embeddedText?.(expression.value) === true
+      );
+  }
 }
 
-function walkArrayExpression(
-  expression: ArrayExpr,
+function walkTestExpression(
+  expression: TestExpression,
   callbacks: WalkCallbacks,
+  source: string,
 ): boolean {
-  return expression.elems.some(
-    (element) =>
-      (element.index ? walkWord(element.index, callbacks) : false) ||
-      (element.value ? walkWord(element.value, callbacks) : false),
-  );
+  switch (expression.type) {
+    case "TestUnary":
+      return walkWord(expression.operand, callbacks, source);
+    case "TestBinary":
+      return (
+        walkWord(expression.left, callbacks, source) ||
+        walkWord(expression.right, callbacks, source)
+      );
+    case "TestLogical":
+      return (
+        walkTestExpression(expression.left, callbacks, source) ||
+        walkTestExpression(expression.right, callbacks, source)
+      );
+    case "TestNot":
+      return walkTestExpression(expression.operand, callbacks, source);
+    case "TestGroup":
+      return walkTestExpression(expression.expression, callbacks, source);
+  }
 }
 
 function walkRedirects(
   redirects: Redirect[] | undefined,
   callbacks: WalkCallbacks,
+  source: string,
 ): boolean {
   return (
     redirects?.some((redirect) => {
-      if (walkWord(redirect.target, callbacks)) return true;
-      if (!redirect.heredoc) return false;
-
-      const delimiterIsQuoted =
-        redirect.target.parts.some(
-          (part) => part.type === "SglQuoted" || part.type === "DblQuoted",
-        ) || wordToString(redirect.target).includes("\\");
-      const text = wordToString(redirect.heredoc);
-      return (
-        (!delimiterIsQuoted &&
-          hasUnescapedCommandSubstitution(text) &&
-          callbacks.embeddedText?.(text) === true) ||
-        walkWord(redirect.heredoc, callbacks)
+      if (walkWord(redirect.target, callbacks, source)) return true;
+      if (walkWord(redirect.body, callbacks, source)) return true;
+      return Boolean(
+        !redirect.heredocQuoted &&
+          redirect.content &&
+          hasUnescapedCommandSubstitution(redirect.content) &&
+          callbacks.embeddedText?.(redirect.content) === true,
       );
     }) ?? false
   );
+}
+
+function nodeToProgram(node: Node, source: string): ShellProgram {
+  const commands =
+    node.type === "CompoundList"
+      ? node.commands
+      : node.type === "BraceGroup" || node.type === "Subshell"
+        ? node.body.commands
+        : node.type === "Statement"
+          ? [node]
+          : [
+              {
+                type: "Statement" as const,
+                pos: node.pos,
+                end: node.end,
+                command: node,
+                background: undefined,
+                redirects: [],
+              },
+            ];
+  return {
+    source,
+    script: {
+      type: "Script",
+      pos: node.pos,
+      end: node.end,
+      shebang: undefined,
+      commands,
+    },
+  };
 }
