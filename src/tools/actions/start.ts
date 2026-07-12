@@ -37,6 +37,18 @@ export function executeStart(
 
   try {
     const proc = manager.start(params.name, params.command, ctx.cwd);
+    if (proc.pid <= 0 || proc.status !== "running") {
+      const message = "Failed to start process: process exited during startup";
+      return {
+        content: [{ type: "text", text: message }],
+        details: {
+          action: "start",
+          success: false,
+          message,
+        },
+      };
+    }
+
     const shouldContinue = params.continueAfterStart === true;
     const nextStep = shouldContinue
       ? "Continue with specific non-polling work now. Do not call process list/output/logs just to wait; the extension will notify you when this process ends."

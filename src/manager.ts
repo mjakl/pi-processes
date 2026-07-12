@@ -137,8 +137,6 @@ export class ProcessManager {
 
     const child = spawnCommand(command, cwd, this.getConfiguredShellPath());
 
-    child.unref();
-
     const managed: ManagedProcess = {
       id,
       name,
@@ -156,21 +154,6 @@ export class ProcessManager {
       combinedFile,
       triggerAgentTurnOnEnd: true,
     };
-
-    this.processes.set(id, managed);
-
-    if (!child.pid) {
-      try {
-        appendFileSync(stderrFile, "Spawn error: missing pid\n");
-      } catch {
-        // Ignore
-      }
-      managed.exitCode = -1;
-      managed.success = false;
-      managed.endTime = Date.now();
-      this.transition(managed, "exited");
-      return this.toProcessInfo(managed);
-    }
 
     child.stdout?.on("data", (data: Buffer) => {
       try {
@@ -233,6 +216,15 @@ export class ProcessManager {
       }
     });
 
+    if (!child.pid) {
+      managed.exitCode = -1;
+      managed.success = false;
+      managed.endTime = Date.now();
+      throw new Error("Failed to spawn process: no process ID was assigned");
+    }
+
+    child.unref();
+    this.processes.set(id, managed);
     this.emit({ type: "process_started", info: this.toProcessInfo(managed) });
     this.ensureWatcherRunning();
 

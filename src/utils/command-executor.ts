@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
 interface ResolveShellExecutableOptions {
@@ -14,20 +14,30 @@ const DEFAULT_KNOWN_SHELL_PATHS = [
   "/usr/local/bin/bash",
 ];
 
-function isExistingAbsolutePath(shell: string | undefined): shell is string {
-  return typeof shell === "string" && isAbsolute(shell) && existsSync(shell);
+function isExecutableFile(shell: string | undefined): shell is string {
+  if (typeof shell !== "string" || !isAbsolute(shell) || !existsSync(shell)) {
+    return false;
+  }
+
+  try {
+    if (!statSync(shell).isFile()) return false;
+    accessSync(shell, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function resolveShellExecutable({
   configuredShell,
   knownPaths,
 }: ResolveShellExecutableOptions): string {
-  if (isExistingAbsolutePath(configuredShell)) {
+  if (isExecutableFile(configuredShell)) {
     return configuredShell;
   }
 
   for (const path of knownPaths) {
-    if (isExistingAbsolutePath(path)) {
+    if (isExecutableFile(path)) {
       return path;
     }
   }

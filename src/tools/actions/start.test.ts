@@ -56,6 +56,30 @@ describe("executeStart", () => {
     expect(result.details.message).toContain("specific non-polling work");
   });
 
+  it("does not report an already-exited process as started", () => {
+    const manager = {
+      start: vi.fn(() =>
+        fakeProcess({
+          pid: -1,
+          status: "exited",
+          endTime: START_TIME,
+          exitCode: -1,
+          success: false,
+        }),
+      ),
+    } as const;
+
+    const result = executeStart(
+      { name: "server", command: "pnpm dev" },
+      manager as never,
+      { cwd: process.cwd() } as never,
+    );
+
+    expect(result.details.success).toBe(false);
+    expect(result.terminate).toBeUndefined();
+    expect(result.details.message).toContain("exited during startup");
+  });
+
   it("returns a friendly error when process startup throws", () => {
     const manager = {
       start: vi.fn().mockImplementation(() => {

@@ -22,12 +22,12 @@ import type { ManagerEvent } from "./constants";
 import { ProcessManager } from "./manager";
 
 class FakeChildProcess extends EventEmitter {
-  pid: number;
+  pid: number | undefined;
   stdout = new EventEmitter();
   stderr = new EventEmitter();
   unref = vi.fn();
 
-  constructor(pid: number) {
+  constructor(pid?: number) {
     super();
     this.pid = pid;
   }
@@ -167,6 +167,24 @@ describe("ProcessManager", () => {
       triggerAgentTurn: true,
       info: { id: proc.id, status: "killed" },
     });
+  });
+
+  it("handles PID-less spawn failures without an unhandled child error", () => {
+    const child = new FakeChildProcess();
+    mocks.spawnCommand.mockImplementationOnce(() => {
+      children.push(child);
+      return child;
+    });
+    const listener = vi.fn();
+    manager.onEvent(listener);
+
+    expect(() => manager.start("server", "pnpm dev", process.cwd())).toThrow(
+      "no process ID was assigned",
+    );
+    expect(manager.list()).toEqual([]);
+    expect(listener).not.toHaveBeenCalled();
+    expect(() => child.emit("error", new Error("spawn ENOENT"))).not.toThrow();
+    expect(manager.list()).toEqual([]);
   });
 
   it("uses private, independent log directories", () => {
