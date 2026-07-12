@@ -6,8 +6,9 @@ import {
   sanitizeLine,
   truncateCmd,
 } from "../../utils";
+import { compactProcessInfo } from "../process-details";
 
-const MAX_LISTED_PROCESSES = 100;
+const MAX_LISTED_PROCESSES = 30;
 
 export function executeList(manager: ProcessManager): ExecuteResult {
   const allProcesses = manager.list();
@@ -26,12 +27,7 @@ export function executeList(manager: ProcessManager): ExecuteResult {
 
   const processes = allProcesses
     .slice(0, MAX_LISTED_PROCESSES)
-    .map((process) => ({
-      ...process,
-      name: truncateCmd(process.name, 120),
-      command: truncateCmd(process.command, 500),
-      cwd: truncateCmd(process.cwd, 500),
-    }));
+    .map(compactProcessInfo);
   const summary = processes
     .map(
       (p) =>
@@ -55,7 +51,7 @@ export function executeList(manager: ProcessManager): ExecuteResult {
     details: {
       action: "list",
       success: true,
-      message,
+      message: count,
       processes,
       totalProcesses: allProcesses.length,
     },

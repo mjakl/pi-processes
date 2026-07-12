@@ -5,7 +5,13 @@ import {
   type ResolveProcessResult,
 } from "../../constants";
 import type { ProcessManager } from "../../manager";
-import { formatStatus, hasAnsi, sanitizeLine, truncateCmd } from "../../utils";
+import {
+  formatStatus,
+  hasAnsi,
+  sanitizeLine,
+  truncateUtf8Bytes,
+} from "../../utils";
+import { formatAmbiguousProcessMessage } from "../process-details";
 
 const MAX_BYTES = 50 * 1024; // 50KB
 
@@ -21,12 +27,7 @@ function resolveProcessResult(
   if (result.ok) return null;
 
   if (result.reason === "ambiguous") {
-    const choices = (result.matches ?? [])
-      .map((match) => `${match.id} ("${sanitizeLine(match.name)}")`)
-      .join(", ");
-    const message =
-      `Process name is ambiguous: ${sanitizeLine(id)}. ` +
-      `Use an exact process ID instead. Matches: ${choices}`;
+    const message = formatAmbiguousProcessMessage(id, result.matches ?? []);
     return {
       content: [{ type: "text", text: message }],
       details: {
@@ -117,10 +118,10 @@ export function executeOutput(
     hadAnsi: [...output.stdout, ...output.stderr].some(hasAnsi),
     stdout: output.stdout
       .slice(-20)
-      .map((line) => truncateCmd(sanitizeLine(line), 1000)),
+      .map((line) => truncateUtf8Bytes(sanitizeLine(line), 256)),
     stderr: output.stderr
       .slice(-10)
-      .map((line) => truncateCmd(sanitizeLine(line), 1000)),
+      .map((line) => truncateUtf8Bytes(sanitizeLine(line), 256)),
   };
 
   return {
@@ -174,7 +175,7 @@ function truncateTail(
     notice = buildTruncationNotice(kept.length, totalLines, hitBytes, logFiles);
   }
 
-  return truncateUtf8(notice, MAX_BYTES);
+  return truncateUtf8Bytes(notice, MAX_BYTES, "");
 }
 
 function buildTruncationNotice(
@@ -197,14 +198,6 @@ function buildTruncationNotice(
     notice += ` Retained logs: ${logFiles.stdoutFile} , ${logFiles.stderrFile}`;
   }
   return `${notice}]`;
-}
-
-function truncateUtf8(value: string, maxBytes: number): string {
-  const buffer = Buffer.from(value);
-  if (buffer.length <= maxBytes) return value;
-  let end = maxBytes;
-  while (end > 0 && (buffer[end] & 0xc0) === 0x80) end--;
-  return buffer.subarray(0, end).toString("utf8");
 }
 
 function formatSize(bytes: number): string {

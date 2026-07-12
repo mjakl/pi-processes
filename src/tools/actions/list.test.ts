@@ -7,15 +7,15 @@ function processInfo(index: number): ProcessInfo {
     id: `proc_${index}`,
     name: `process-${index}`,
     pid: 1000 + index,
-    command: "x".repeat(1000),
-    cwd: `/tmp/process-${index}`,
+    command: '\\"'.repeat(1000),
+    cwd: `/tmp/${'\\"'.repeat(1000)}-${index}`,
     startTime: index,
     endTime: index + 1,
     status: "exited",
     exitCode: 0,
     success: true,
-    stdoutFile: `/tmp/${index}-stdout.log`,
-    stderrFile: `/tmp/${index}-stderr.log`,
+    stdoutFile: `/tmp/${'\\"'.repeat(1000)}-${index}-stdout.log`,
+    stderrFile: `/tmp/${'\\"'.repeat(1000)}-${index}-stderr.log`,
   };
 }
 
@@ -28,10 +28,14 @@ describe("executeList", () => {
 
     const result = executeList(manager as never);
 
-    expect(result.details.processes).toHaveLength(100);
-    expect(result.details.message).toContain("Showing 100 of 150 process(es)");
-    expect(result.details.processes?.[0]?.command.length).toBeLessThanOrEqual(
-      500,
+    expect(result.details.processes).toHaveLength(30);
+    expect(result.details.message).toContain("Showing 30 of 150 process(es)");
+    expect(
+      Buffer.byteLength(result.details.processes?.[0]?.command ?? ""),
+    ).toBeLessThanOrEqual(192);
+    expect(Buffer.byteLength(JSON.stringify(result.details))).toBeLessThan(
+      32 * 1024,
     );
+    expect(JSON.stringify(result.details)).not.toContain("�");
   });
 });

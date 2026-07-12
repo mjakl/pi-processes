@@ -6,6 +6,7 @@ import {
 } from "../../hooks/background-blocker";
 import type { ProcessManager } from "../../manager";
 import { formatTimestamp, sanitizeLine } from "../../utils";
+import { compactProcessInfo } from "../process-details";
 
 interface StartParams {
   name?: string;
@@ -82,7 +83,7 @@ export function executeStart(
         action: "start",
         success: true,
         message,
-        process: proc,
+        process: compactProcessInfo(proc),
       },
       terminate: !shouldContinue,
     };

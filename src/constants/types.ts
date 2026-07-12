@@ -46,12 +46,24 @@ export type ResolveProcessResult =
   | { ok: true; info: ProcessInfo }
   | { ok: false; reason: "not_found" | "ambiguous"; matches?: ProcessInfo[] };
 
+export interface ProcessPreview {
+  id: string;
+  name: string;
+  pid: number;
+  command: string;
+  startTime: number;
+  endTime: number | null;
+  status: ProcessStatus;
+  exitCode: number | null;
+  success: boolean | null;
+}
+
 export interface ProcessesDetails {
   action: string;
   success: boolean;
   message: string;
-  process?: ProcessInfo;
-  processes?: ProcessInfo[];
+  process?: ProcessPreview;
+  processes?: ProcessPreview[];
   output?: {
     stdout: string[];
     stderr: string[];

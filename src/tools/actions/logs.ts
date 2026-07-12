@@ -1,6 +1,7 @@
 import type { ExecuteResult } from "../../constants";
 import type { ProcessManager } from "../../manager";
 import { sanitizeLine } from "../../utils";
+import { formatAmbiguousProcessMessage } from "../process-details";
 
 interface LogsParams {
   id?: string;
@@ -24,12 +25,10 @@ export function executeLogs(
   const resolved = manager.resolve(params.id);
   if (!resolved.ok) {
     if (resolved.reason === "ambiguous") {
-      const choices = (resolved.matches ?? [])
-        .map((match) => `${match.id} ("${sanitizeLine(match.name)}")`)
-        .join(", ");
-      const message =
-        `Process name is ambiguous: ${sanitizeLine(params.id)}. ` +
-        `Use an exact process ID instead. Matches: ${choices}`;
+      const message = formatAmbiguousProcessMessage(
+        params.id,
+        resolved.matches ?? [],
+      );
       return {
         content: [{ type: "text", text: message }],
         details: {

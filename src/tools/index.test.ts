@@ -106,6 +106,24 @@ describe("process tool contract", () => {
     ).rejects.toThrow("Process not found: missing");
   });
 
+  it("renders Pi-generated operational errors from text content", () => {
+    const tool = captureTool({} as ProcessManager);
+    const rendered = tool
+      .renderResult(
+        {
+          content: [{ type: "text", text: "Process not found: missing" }],
+          details: {},
+        },
+        { expanded: true, isPartial: false },
+        { fg: (_color: string, text: string) => text },
+      )
+      .render(80)
+      .join("\n");
+
+    expect(rendered).toContain("Process not found: missing");
+    expect(rendered).not.toContain("undefined");
+  });
+
   it("renders bounded-result omission metadata", () => {
     const tool = captureTool({} as ProcessManager);
     const theme = { fg: (_color: string, text: string) => text };
@@ -172,18 +190,20 @@ describe("process tool contract", () => {
             success: true,
             message: "logs",
             logFiles: {
-              stdoutFile: "/tmp/stdout.log",
+              stdoutFile: "/tmp/\u001b[31mstdout\ninjected.log",
               stderrFile: "/tmp/stderr.log",
               combinedFile: "/tmp/combined.log",
             },
           },
         },
-        { expanded: false, isPartial: false },
+        { expanded: true, isPartial: false },
         theme,
       )
       .render(80)
       .join("\n");
     expect(logs).toContain("/tmp/combined.log");
+    expect(logs).toContain("/tmp/stdoutinjected.log");
+    expect(logs).not.toContain("\u001b");
   });
 
   it("does not dispatch an already-aborted action", async () => {

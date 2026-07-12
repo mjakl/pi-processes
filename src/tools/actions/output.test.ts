@@ -35,7 +35,7 @@ describe("executeOutput", () => {
   });
 
   it("bounds persisted rendering details independently of tool content", () => {
-    const longLine = "x".repeat(5000);
+    const longLine = '\\"'.repeat(4000);
     const manager = {
       resolve: vi.fn(() => ({ ok: true, info: processInfo })),
       getOutput: vi.fn(() => ({
@@ -63,7 +63,13 @@ describe("executeOutput", () => {
     }
     expect(result.details.output?.stdout).toHaveLength(20);
     expect(result.details.output?.stderr).toHaveLength(10);
-    expect(result.details.output?.stdout[0]?.length).toBeLessThanOrEqual(1000);
+    expect(
+      Buffer.byteLength(result.details.output?.stdout[0] ?? ""),
+    ).toBeLessThanOrEqual(256);
+    expect(Buffer.byteLength(JSON.stringify(result.details))).toBeLessThan(
+      20 * 1024,
+    );
+    expect(JSON.stringify(result.details)).not.toContain("�");
   });
 
   it("reserves the only configured line for the truncation notice", () => {

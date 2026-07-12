@@ -77,10 +77,10 @@ describe("executeKill", () => {
       resolve: vi.fn().mockReturnValue({
         ok: false,
         reason: "ambiguous",
-        matches: [
-          { id: "proc_1", name: "server" },
-          { id: "proc_2", name: "server" },
-        ],
+        matches: Array.from({ length: 1000 }, (_, index) => ({
+          id: `proc_${index + 1}`,
+          name: '\\"'.repeat(1000),
+        })),
       }),
     } as const;
 
@@ -90,5 +90,9 @@ describe("executeKill", () => {
     expect(result.details.message).toContain("Use an exact process ID instead");
     expect(result.details.message).toContain("proc_1");
     expect(result.details.message).toContain("proc_2");
+    expect(result.details.message).toContain("990 more matches");
+    expect(Buffer.byteLength(JSON.stringify(result.details))).toBeLessThan(
+      4096,
+    );
   });
 });

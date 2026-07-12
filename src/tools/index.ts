@@ -266,7 +266,12 @@ Preferred pattern: start the process once, let the turn stop, and resume from th
     ) {
       const { details } = result;
 
-      if (!details) {
+      if (
+        !details ||
+        typeof details.action !== "string" ||
+        typeof details.success !== "boolean" ||
+        typeof details.message !== "string"
+      ) {
         const text = result.content[0];
         return new Text(
           text?.type === "text" && text.text ? text.text : "No result",
@@ -433,9 +438,9 @@ Preferred pattern: start the process once, let the turn stop, and resume from th
           new Text(
             [
               theme.fg("success", "Log files:"),
-              `  stdout: ${theme.fg("accent", details.logFiles.stdoutFile)}`,
-              `  stderr: ${theme.fg("accent", details.logFiles.stderrFile)}`,
-              `  combined: ${theme.fg("accent", details.logFiles.combinedFile)}`,
+              `  stdout: ${theme.fg("accent", sanitizeLine(details.logFiles.stdoutFile))}`,
+              `  stderr: ${theme.fg("accent", sanitizeLine(details.logFiles.stderrFile))}`,
+              `  combined: ${theme.fg("accent", sanitizeLine(details.logFiles.combinedFile))}`,
             ].join("\n"),
             0,
             0,

@@ -4,6 +4,7 @@ export type {
   ManagerEvent,
   ProcessesDetails,
   ProcessInfo,
+  ProcessPreview,
   ProcessStatus,
   ResolveProcessResult,
 } from "./types";

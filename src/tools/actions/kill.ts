@@ -1,6 +1,7 @@
 import { type ExecuteResult, LIVE_STATUSES } from "../../constants";
 import type { ProcessManager } from "../../manager";
 import { sanitizeLine } from "../../utils";
+import { formatAmbiguousProcessMessage } from "../process-details";
 
 interface KillParams {
   id?: string;
@@ -23,12 +24,7 @@ function ambiguousResult(
   id: string,
   matches: Array<{ id: string; name: string }>,
 ): ExecuteResult {
-  const choices = matches
-    .map((match) => `${match.id} ("${sanitizeLine(match.name)}")`)
-    .join(", ");
-  const message =
-    `Process name is ambiguous: ${sanitizeLine(id)}. ` +
-    `Use an exact process ID instead. Matches: ${choices}`;
+  const message = formatAmbiguousProcessMessage(id, matches);
   return {
     content: [{ type: "text", text: message }],
     details: {

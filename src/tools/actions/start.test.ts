@@ -56,6 +56,34 @@ describe("executeStart", () => {
     expect(result.details.message).toContain("specific non-polling work");
   });
 
+  it("byte-bounds structured process details", () => {
+    const manager = {
+      start: vi.fn(() =>
+        fakeProcess({
+          name: "🔥".repeat(120),
+          command: '\\"'.repeat(10_000),
+          cwd: `/${"🔥".repeat(1000)}`,
+          stdoutFile: `/tmp/${"🔥".repeat(1000)}`,
+          stderrFile: `/tmp/${"🔥".repeat(1000)}`,
+        }),
+      ),
+    } as const;
+
+    const result = executeStart(
+      { name: "server", command: "echo ok" },
+      manager as never,
+      { cwd: process.cwd() } as never,
+    );
+
+    expect(Buffer.byteLength(JSON.stringify(result.details))).toBeLessThan(
+      16 * 1024,
+    );
+    expect(
+      Buffer.byteLength(result.details.process?.command ?? ""),
+    ).toBeLessThanOrEqual(192);
+    expect(JSON.stringify(result.details)).not.toContain("�");
+  });
+
   it("does not report an already-exited process as started", () => {
     const manager = {
       start: vi.fn(() =>
