@@ -38,6 +38,8 @@ export interface ResolvedProcessesConfig {
   };
 }
 
+const MAX_OUTPUT_LINES = 2000;
+
 const DEFAULT_CONFIG: ResolvedProcessesConfig = {
   output: {
     defaultTailLines: 100,
@@ -80,19 +82,27 @@ async function readGlobalConfig(): Promise<ProcessesConfig | null> {
   }
 }
 
-function resolveConfig(
+export function resolveConfig(
   config: ProcessesConfig | null,
 ): ResolvedProcessesConfig {
+  const maxOutputLines = positiveIntegerOrDefault(
+    config?.output?.maxOutputLines,
+    DEFAULT_CONFIG.output.maxOutputLines,
+    MAX_OUTPUT_LINES,
+  );
+  const defaultTailLines = Math.min(
+    positiveIntegerOrDefault(
+      config?.output?.defaultTailLines,
+      DEFAULT_CONFIG.output.defaultTailLines,
+      MAX_OUTPUT_LINES,
+    ),
+    maxOutputLines,
+  );
+
   return {
     output: {
-      defaultTailLines: numberOrDefault(
-        config?.output?.defaultTailLines,
-        DEFAULT_CONFIG.output.defaultTailLines,
-      ),
-      maxOutputLines: numberOrDefault(
-        config?.output?.maxOutputLines,
-        DEFAULT_CONFIG.output.maxOutputLines,
-      ),
+      defaultTailLines,
+      maxOutputLines,
     },
     execution: {
       shellPath: stringOrUndefined(config?.execution?.shellPath),
@@ -106,8 +116,15 @@ function resolveConfig(
   };
 }
 
-function numberOrDefault(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+function positiveIntegerOrDefault(
+  value: unknown,
+  fallback: number,
+  maximum: number,
+): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    return fallback;
+  }
+  return Math.min(value, maximum);
 }
 
 function stringOrUndefined(value: unknown): string | undefined {

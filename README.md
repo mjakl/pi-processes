@@ -14,7 +14,7 @@ Coding agents often need to start dev servers, watch-mode tests, log tails, port
 - **Event-driven completion** — the agent is notified when a managed process exits, fails, or is externally killed.
 - **`/ps` overlay** — users can monitor processes and logs without asking the agent to poll.
 - **Status line** — a compact process status appears while managed processes exist.
-- **File-backed logs** — process output is preserved outside the agent context window.
+- **File-backed logs** — recent process output is retained outside the agent context window.
 - **Background-command interception** — optional guardrails steer long-running shell commands toward the `process` tool.
 
 ### Install
@@ -98,8 +98,8 @@ Example:
 
 Options:
 
-- `output.defaultTailLines` — default number of lines returned by `process output`.
-- `output.maxOutputLines` — hard cap for `process output`.
+- `output.defaultTailLines` — default number of lines returned by `process output` (positive integer, capped by `maxOutputLines`).
+- `output.maxOutputLines` — hard cap for `process output` (positive integer, at most 2,000).
 - `execution.shellPath` — absolute shell path override used for process startup.
 - `interception.blockBackgroundCommands` — block shell backgrounding and obvious long-running foreground commands such as `pnpm dev`, `docker compose up`, `tail -f`, or `kubectl port-forward`, and guide the agent to use the `process` tool instead.
 
@@ -170,6 +170,7 @@ Repeated `process list`, `process output`, or `process logs` calls just to check
 
 - `process output` is for one-off diagnostic snapshots in the conversation.
 - `process logs` returns log file paths for deeper inspection and for the `/ps` overlay.
+- Each stdout, stderr, and combined log file keeps the latest output, up to 5 MiB. On overflow it trims to roughly 4 MiB so runaway output cannot grow without bound.
 - Use `output` and `logs` when the user asks, when debugging, or when investigating a specific problem.
 
 ### Killing processes

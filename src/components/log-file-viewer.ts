@@ -4,6 +4,7 @@
  */
 
 import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { sanitizeLine } from "../utils";
@@ -15,8 +16,12 @@ interface ParsedLine {
 
 interface LineCache {
   size: number;
+  mtimeNs: bigint;
   lines: ParsedLine[];
   pending: string;
+  decoder: StringDecoder;
+  skipLeadingContinuation: boolean;
+  skipLeadingPartialLine: boolean;
 }
 
 interface LogFileViewerOptions {
@@ -27,16 +32,17 @@ interface LogFileViewerOptions {
 }
 
 const MAX_RETAINED_LOG_LINES = 10_000;
+const MAX_READ_BYTES = 512 * 1024;
 
 export class LogFileViewer {
   private filePath: string;
   private theme: Theme;
 
   private follow: boolean;
-  private cache: LineCache = { size: 0, lines: [], pending: "" };
-  /** Absolute index of the last visible line (1-based).
-   *  null = follow mode; always shows latest lines. */
+  private cache: LineCache = this.newCache();
+  /** Index of the last visible retained line (1-based); null follows the tail. */
   private anchorEnd: number | null = null;
+  private lastPageSize = 1;
 
   constructor(opts: LogFileViewerOptions) {
     this.filePath = opts.filePath;
@@ -44,32 +50,61 @@ export class LogFileViewer {
     this.follow = opts.follow ?? false;
   }
 
+  private newCache(size = 0): LineCache {
+    return {
+      size,
+      mtimeNs: 0n,
+      lines: [],
+      pending: "",
+      decoder: new StringDecoder("utf8"),
+      skipLeadingContinuation: size > 0,
+      skipLeadingPartialLine: size > 0,
+    };
+  }
+
   private readAllLines(): ParsedLine[] {
     let size: number;
+    let mtimeNs: bigint;
     try {
-      size = statSync(this.filePath).size;
+      const stats = statSync(this.filePath, { bigint: true });
+      size = Number(stats.size);
+      mtimeNs = stats.mtimeNs;
     } catch {
       this.resetCache();
       return [];
     }
 
-    if (size === this.cache.size) {
-      return this.cache.lines;
-    }
-
-    if (size < this.cache.size) {
+    if (
+      size < this.cache.size ||
+      (size === this.cache.size && mtimeNs !== this.cache.mtimeNs)
+    ) {
       this.resetCache();
     }
-
     if (size === 0) {
       this.resetCache();
       return [];
     }
+    if (size === this.cache.size) {
+      return this.cache.lines;
+    }
+
+    let unreadBytes = size - this.cache.size;
+    if (unreadBytes > MAX_READ_BYTES) {
+      this.cache = this.newCache(size - MAX_READ_BYTES);
+      this.anchorEnd = this.follow ? null : 0;
+      unreadBytes = MAX_READ_BYTES;
+    }
 
     try {
-      const chunk = this.readRange(this.cache.size, size - this.cache.size);
-      this.cache.size = size;
-      this.appendChunk(chunk);
+      const chunk = this.readRange(
+        this.cache.size,
+        unreadBytes,
+        this.cache.skipLeadingContinuation,
+      );
+      this.cache.skipLeadingContinuation = false;
+      this.cache.size += chunk.bytesRead;
+      this.cache.mtimeNs = mtimeNs;
+      this.appendChunk(chunk.content);
       return this.cache.lines;
     } catch {
       return this.cache.lines;
@@ -77,37 +112,71 @@ export class LogFileViewer {
   }
 
   private resetCache(): void {
-    this.cache = { size: 0, lines: [], pending: "" };
+    this.cache = this.newCache();
+    this.anchorEnd = this.follow ? null : 0;
   }
 
-  private readRange(start: number, length: number): string {
-    if (length <= 0) return "";
+  private readRange(
+    start: number,
+    length: number,
+    skipLeadingContinuation: boolean,
+  ): { content: Buffer; bytesRead: number } {
+    if (length <= 0) return { content: Buffer.alloc(0), bytesRead: 0 };
 
     const fd = openSync(this.filePath, "r");
     try {
-      const buffer = Buffer.allocUnsafe(length);
-      const bytesRead = readSync(fd, buffer, 0, length, start);
-      return buffer.subarray(0, bytesRead).toString("utf-8");
+      const buffer = Buffer.allocUnsafe(Math.min(length, MAX_READ_BYTES));
+      const bytesRead = readSync(fd, buffer, 0, buffer.length, start);
+      let content = buffer.subarray(0, bytesRead);
+
+      // A bounded tail can begin inside a UTF-8 sequence. Skip continuation
+      // bytes so StringDecoder starts at the next complete character.
+      if (skipLeadingContinuation) {
+        let utf8Start = 0;
+        while (
+          utf8Start < content.length &&
+          (content[utf8Start] & 0xc0) === 0x80
+        ) {
+          utf8Start++;
+        }
+        content = content.subarray(utf8Start);
+      }
+
+      return { content, bytesRead };
     } finally {
       closeSync(fd);
     }
   }
 
-  private appendChunk(chunk: string): void {
-    if (!chunk) return;
+  private appendChunk(chunk: Buffer): void {
+    if (chunk.length === 0) return;
 
-    const rawLines = `${this.cache.pending}${chunk}`.split("\n");
+    let decoded = this.cache.decoder.write(chunk);
+    if (this.cache.skipLeadingPartialLine) {
+      const firstNewline = decoded.indexOf("\n");
+      decoded =
+        firstNewline >= 0
+          ? decoded.slice(firstNewline + 1)
+          : `1:[…] ${decoded}\n`;
+      this.cache.skipLeadingPartialLine = false;
+    }
+
+    const rawLines = `${this.cache.pending}${decoded}`.split("\n");
     this.cache.pending = rawLines.pop() ?? "";
 
     for (const line of rawLines) {
       this.cache.lines.push(this.parseLine(line));
     }
 
-    if (this.cache.lines.length > MAX_RETAINED_LOG_LINES) {
-      this.cache.lines.splice(
-        0,
-        this.cache.lines.length - MAX_RETAINED_LOG_LINES,
-      );
+    const dropped = Math.max(
+      0,
+      this.cache.lines.length - MAX_RETAINED_LOG_LINES,
+    );
+    if (dropped > 0) {
+      this.cache.lines.splice(0, dropped);
+      if (this.anchorEnd !== null) {
+        this.anchorEnd = Math.max(0, this.anchorEnd - dropped);
+      }
     }
   }
 
@@ -123,16 +192,20 @@ export class LogFileViewer {
   }
 
   scrollToTop(): void {
-    this.anchorEnd = 0;
+    const total = this.readAllLines().length;
+    this.anchorEnd = Math.min(this.lastPageSize, total);
     this.follow = false;
   }
 
   /** delta > 0 = scroll toward older content, delta < 0 = toward newer. */
   scrollBy(delta: number): void {
-    if (this.anchorEnd === null) {
-      this.anchorEnd = this.readAllLines().length;
-    }
-    this.anchorEnd = Math.max(0, this.anchorEnd - delta);
+    const total = this.readAllLines().length;
+    const minimumEnd = Math.min(this.lastPageSize, total);
+    const currentEnd =
+      this.anchorEnd === null
+        ? total
+        : Math.min(total, Math.max(minimumEnd, this.anchorEnd));
+    this.anchorEnd = Math.min(total, Math.max(minimumEnd, currentEnd - delta));
     this.follow = false;
   }
 
@@ -150,17 +223,16 @@ export class LogFileViewer {
   renderLines(width: number, maxLines: number): string[] {
     const dim = (s: string) => this.theme.fg("dim", s);
     const warning = (s: string) => this.theme.fg("warning", s);
+    const pageSize = Math.max(0, Math.floor(maxLines));
+    this.lastPageSize = Math.max(1, pageSize);
+    if (pageSize === 0) return [];
 
     const lines = this.readAllLines();
     const total = lines.length;
     if (total === 0) return [dim("(no output yet)")];
 
-    // Resolve anchor: null = follow (tail), number = absolute frozen end.
-    const rawEnd = this.anchorEnd ?? total;
-    // Clamp to valid range. Math.max with min(maxLines, total) ensures anchorEnd = 0
-    // (scrollToTop sentinel) still shows a full window from the top.
-    const endIdx = Math.min(total, Math.max(rawEnd, Math.min(maxLines, total)));
-    const startIdx = Math.max(0, endIdx - maxLines);
+    const endIdx = this.resolveEnd(total, pageSize);
+    const startIdx = Math.max(0, endIdx - pageSize);
 
     return lines.slice(startIdx, endIdx).map((line) => {
       const text = truncateToWidth(sanitizeLine(line.text), width);
@@ -181,13 +253,17 @@ export class LogFileViewer {
     } else if (total === 0) {
       status = dim("empty");
     } else {
-      const rawEnd = this.anchorEnd ?? total;
-      const endIdx = Math.min(total, Math.max(0, rawEnd));
+      const endIdx = this.resolveEnd(total, this.lastPageSize);
       const pct = Math.round((endIdx / total) * 100);
-      status = dim(`${pct}%  L${Math.min(endIdx, total)}/${total}`);
+      status = dim(`${pct}%  L${endIdx}/${total}`);
     }
 
     const safe = truncateToWidth(status, width);
     return safe + " ".repeat(Math.max(0, width - visibleWidth(safe)));
+  }
+
+  private resolveEnd(total: number, pageSize: number): number {
+    const minimumEnd = Math.min(pageSize, total);
+    return Math.min(total, Math.max(minimumEnd, this.anchorEnd ?? total));
   }
 }

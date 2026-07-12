@@ -271,6 +271,26 @@ describe("ProcessManager", () => {
     }
   });
 
+  it("preserves combined lines and UTF-8 across stream chunks", () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    const emoji = Buffer.from("🔥");
+
+    children[0].stdout.emit("data", Buffer.from("hel"));
+    children[0].stderr.emit("data", Buffer.from("warn\n"));
+    children[0].stdout.emit("data", Buffer.from("lo\npartial"));
+    children[0].stdout.emit("data", emoji.subarray(0, 2));
+    children[0].stdout.emit("data", emoji.subarray(2));
+    children[0].stdout.emit("end");
+    children[0].stderr.emit("end");
+
+    expect(manager.getOutput(proc.id)?.stdout).toEqual(["hello", "partial🔥"]);
+    expect(manager.getCombinedOutput(proc.id)).toEqual([
+      { type: "stderr", text: "warn" },
+      { type: "stdout", text: "hello" },
+      { type: "stdout", text: "partial🔥" },
+    ]);
+  });
+
   it("keeps tracking descendants after the shell leader closes", () => {
     const proc = manager.start("server", "pnpm dev", process.cwd());
     const ended = vi.fn();

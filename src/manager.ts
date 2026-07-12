@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,6 +13,11 @@ import {
 } from "./constants";
 import { isProcessGroupAlive, killProcessGroup } from "./utils";
 import { spawnCommand } from "./utils/command-executor";
+import {
+  BoundedLogFile,
+  CombinedLogWriter,
+  readTailLines as readLogTailLines,
+} from "./utils/log-files";
 
 interface ManagedProcess extends ProcessInfo {
   lastSignalSent: NodeJS.Signals | null;
@@ -27,6 +32,14 @@ interface ManagedProcess extends ProcessInfo {
 interface ProcessManagerOptions {
   getConfiguredShellPath?: () => string | undefined;
 }
+
+const LOG_FILE_MAX_BYTES = 5 * 1024 * 1024;
+const LOG_FILE_RETAIN_BYTES = 4 * 1024 * 1024;
+const TAIL_READ_MAX_BYTES = 512 * 1024;
+const LOG_FILE_OPTIONS = {
+  maxBytes: LOG_FILE_MAX_BYTES,
+  retainBytes: LOG_FILE_RETAIN_BYTES,
+};
 
 export class ProcessManager {
   private processes: Map<string, ManagedProcess> = new Map();
@@ -147,6 +160,9 @@ export class ProcessManager {
     appendFileSync(stderrFile, "", { mode: 0o600 });
     appendFileSync(combinedFile, "", { mode: 0o600 });
 
+    const stdoutLog = new BoundedLogFile(stdoutFile, LOG_FILE_OPTIONS);
+    const stderrLog = new BoundedLogFile(stderrFile, LOG_FILE_OPTIONS);
+    const combinedLog = new CombinedLogWriter(combinedFile, LOG_FILE_OPTIONS);
     const child = spawnCommand(command, cwd, this.getConfiguredShellPath());
 
     const managed: ManagedProcess = {
@@ -173,39 +189,45 @@ export class ProcessManager {
 
     child.stdout?.on("data", (data: Buffer) => {
       try {
-        appendFileSync(stdoutFile, data);
-        const lines = data.toString().split("\n");
-        // The last element after split is either empty (if data ended with \n)
-        // or a partial line. We write all parts with the prefix and newline.
-        const tagged = lines
-          .map((line, i) =>
-            i < lines.length - 1 ? `1:${line}\n` : line ? `1:${line}\n` : "",
-          )
-          .join("");
-        if (tagged) appendFileSync(combinedFile, tagged);
+        stdoutLog.append(data);
+        combinedLog.write("stdout", data);
       } catch {
-        // Ignore
+        // Ignore log write failures
+      }
+    });
+    child.stdout?.on("end", () => {
+      try {
+        combinedLog.end("stdout");
+      } catch {
+        // Ignore log write failures
       }
     });
 
     child.stderr?.on("data", (data: Buffer) => {
       try {
-        appendFileSync(stderrFile, data);
-        const lines = data.toString().split("\n");
-        const tagged = lines
-          .map((line, i) =>
-            i < lines.length - 1 ? `2:${line}\n` : line ? `2:${line}\n` : "",
-          )
-          .join("");
-        if (tagged) appendFileSync(combinedFile, tagged);
+        stderrLog.append(data);
+        combinedLog.write("stderr", data);
       } catch {
-        // Ignore
+        // Ignore log write failures
+      }
+    });
+    child.stderr?.on("end", () => {
+      try {
+        combinedLog.end("stderr");
+      } catch {
+        // Ignore log write failures
       }
     });
 
     child.on("close", (code, signal) => {
       if (managed.leaderClosed) return;
 
+      try {
+        combinedLog.end("stdout");
+        combinedLog.end("stderr");
+      } catch {
+        // Ignore log write failures
+      }
       managed.leaderClosed = true;
       managed.leaderExitCode = code ?? (managed.processError ? -1 : null);
       managed.leaderExitSignal = signal;
@@ -214,9 +236,9 @@ export class ProcessManager {
 
     child.on("error", (err) => {
       try {
-        appendFileSync(stderrFile, `Process error: ${err.message}\n`);
+        stderrLog.append(`Process error: ${err.message}\n`);
       } catch {
-        // Ignore
+        // Ignore log write failures
       }
       managed.processError = true;
     });
@@ -493,16 +515,7 @@ export class ProcessManager {
   }
 
   private readTailLines(filePath: string, lines: number): string[] {
-    try {
-      const content = readFileSync(filePath, "utf-8");
-      const allLines = content.split("\n");
-      if (allLines.length > 0 && allLines[allLines.length - 1] === "") {
-        allLines.pop();
-      }
-      return allLines.slice(-lines);
-    } catch {
-      return [];
-    }
+    return readLogTailLines(filePath, lines, TAIL_READ_MAX_BYTES);
   }
 
   private toProcessInfo(managed: ManagedProcess): ProcessInfo {
