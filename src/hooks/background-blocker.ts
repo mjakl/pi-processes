@@ -9,7 +9,12 @@
 import { basename } from "node:path";
 import { type Program, parse } from "@aliou/sh";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { walkCommands, wordToString } from "../utils/shell-utils";
+import {
+  hasBackgroundStatement,
+  walkCommands,
+  walkEmbeddedShellText,
+  wordToString,
+} from "../utils/shell-utils";
 
 const BACKGROUND_CMD_NAMES = new Set(["nohup", "disown", "setsid"]);
 const BACKGROUND_PATTERN = /&\s*$/;
@@ -30,6 +35,51 @@ const DIRECT_LONG_RUNNING_COMMANDS = new Set([
   "honcho",
 ]);
 const SHELL_LAUNCHERS = new Set(["bash", "sh", "zsh", "fish"]);
+const COMMAND_WRAPPERS = new Set(["command", "exec", "env", "sudo"]);
+const PACKAGE_MANAGER_OPTIONS_WITH_VALUE = new Set([
+  "-c",
+  "--cwd",
+  "--dir",
+  "--cache",
+  "--config",
+  "--filter",
+  "--prefix",
+  "--registry",
+  "--userconfig",
+  "--workspace",
+]);
+const PACKAGE_EXEC_OPTIONS_WITH_VALUE = new Set([
+  "-c",
+  "--call",
+  "-p",
+  "--package",
+  "-w",
+  "--workspace",
+]);
+const ENV_OPTIONS_WITH_VALUE = new Set(["-c", "--chdir", "-u", "--unset"]);
+const SHELL_OPTIONS_WITH_VALUE = new Set([
+  "-O",
+  "-o",
+  "--init-file",
+  "--rcfile",
+]);
+const SUDO_OPTIONS_WITH_VALUE = new Set([
+  "-c",
+  "-d",
+  "-g",
+  "-h",
+  "-p",
+  "-r",
+  "-t",
+  "-u",
+  "--chdir",
+  "--group",
+  "--host",
+  "--prompt",
+  "--role",
+  "--type",
+  "--user",
+]);
 const FOLLOW_FLAGS = new Set(["-f", "--follow"]);
 const WATCH_FLAGS = new Set([
   "--watch",
@@ -50,17 +100,24 @@ interface ManagedCommandDecision {
 export function analyzeManagedCommand(
   command: string,
 ): ManagedCommandDecision | undefined {
+  return analyzeManagedCommandAtDepth(command, 0);
+}
+
+function analyzeManagedCommandAtDepth(
+  command: string,
+  depth: number,
+): ManagedCommandDecision | undefined {
+  if (depth > 8) return undefined;
+
   try {
     const { ast } = parse(command);
 
-    for (const stmt of ast.body) {
-      if (stmt.background) {
-        return {
-          kind: "background",
-          suggestedName:
-            findFirstCommandName(command, ast) ?? "background-process",
-        };
-      }
+    if (hasBackgroundStatement(ast)) {
+      return {
+        kind: "background",
+        suggestedName:
+          findFirstCommandName(command, ast) ?? "background-process",
+      };
     }
 
     let decision: ManagedCommandDecision | undefined;
@@ -68,9 +125,17 @@ export function analyzeManagedCommand(
       const words = cmd.words?.map(wordToString).filter(Boolean) ?? [];
       if (words.length === 0) return false;
 
-      decision = classifySimpleCommand(words);
+      decision = classifyCommandWords(words, depth);
       return decision !== undefined;
     });
+
+    if (!decision) {
+      walkEmbeddedShellText(ast, (text) => {
+        if (!/\$\(|`/.test(text)) return false;
+        decision = analyzeManagedCommandAtDepth(text, depth + 1);
+        return decision !== undefined;
+      });
+    }
 
     return decision;
   } catch {
@@ -106,6 +171,34 @@ export function setupBackgroundBlocker(pi: ExtensionAPI): void {
   });
 }
 
+function classifyCommandWords(
+  words: string[],
+  depth: number,
+): ManagedCommandDecision | undefined {
+  if (depth > 8) return undefined;
+
+  let current = words;
+  for (let wrappers = 0; wrappers < 32; wrappers++) {
+    const direct = classifySimpleCommand(current);
+    if (direct) return direct;
+
+    const nestedCommand = getWrapperCommandString(current);
+    if (nestedCommand) {
+      return analyzeManagedCommandAtDepth(nestedCommand, depth + 1);
+    }
+
+    const shellCommand = getShellCommand(current);
+    if (shellCommand) {
+      return analyzeManagedCommandAtDepth(shellCommand, depth + 1);
+    }
+
+    const unwrapped = unwrapCommand(current);
+    if (!unwrapped) return undefined;
+    current = unwrapped;
+  }
+  return undefined;
+}
+
 function classifySimpleCommand(
   words: string[],
 ): ManagedCommandDecision | undefined {
@@ -137,7 +230,9 @@ function isLongRunningCommand(
   args: string[],
 ): boolean {
   if (PACKAGE_MANAGERS.has(name)) {
-    const scriptName = getPackageManagerScript(args);
+    const invocationArgs = stripPackageManagerOptions(rawArgs);
+    const normalizedInvocation = invocationArgs.map((arg) => arg.toLowerCase());
+    const scriptName = getPackageManagerScript(normalizedInvocation);
     if (
       (scriptName !== undefined && LONG_RUNNING_SCRIPT_NAMES.has(scriptName)) ||
       hasAnyArg(args, WATCH_FLAGS)
@@ -145,14 +240,18 @@ function isLongRunningCommand(
       return true;
     }
 
-    if ((args[0] === "exec" || args[0] === "dlx") && rawArgs[1]) {
-      const execName = basename(rawArgs[1]).toLowerCase();
-      const execArgs = rawArgs.slice(2);
+    if (
+      normalizedInvocation[0] === "exec" ||
+      normalizedInvocation[0] === "dlx"
+    ) {
+      const executable = getPackageExecutable(invocationArgs);
+      if (!executable) return false;
+      const execName = basename(executable.name).toLowerCase();
       return isLongRunningCommand(
-        rawArgs[1],
-        execArgs,
+        executable.name,
+        executable.args,
         execName,
-        execArgs.map((arg) => arg.toLowerCase()),
+        executable.args.map((arg) => arg.toLowerCase()),
       );
     }
 
@@ -207,6 +306,139 @@ function getPackageManagerScript(args: string[]): string | undefined {
   return args[0];
 }
 
+function stripPackageManagerOptions(args: string[]): string[] {
+  let index = 0;
+  while (index < args.length) {
+    const arg = args[index];
+    if (arg === "--") return args.slice(index + 1);
+    if (!arg.startsWith("-")) break;
+
+    const option = arg.toLowerCase().split("=", 1)[0];
+    const consumesValue =
+      PACKAGE_MANAGER_OPTIONS_WITH_VALUE.has(option) && !arg.includes("=");
+    index += consumesValue ? 2 : 1;
+  }
+  return args.slice(index);
+}
+
+function getPackageExecutable(
+  invocation: string[],
+): { name: string; args: string[] } | undefined {
+  let index = 1;
+  while (index < invocation.length) {
+    const arg = invocation[index];
+    if (arg === "--") {
+      index++;
+      break;
+    }
+    if (!arg.startsWith("-")) break;
+
+    const option = arg.toLowerCase().split("=", 1)[0];
+    const consumesValue =
+      PACKAGE_EXEC_OPTIONS_WITH_VALUE.has(option) && !arg.includes("=");
+    index += consumesValue ? 2 : 1;
+  }
+
+  const name = invocation[index];
+  return name ? { name, args: invocation.slice(index + 1) } : undefined;
+}
+
+function getWrapperCommandString(words: string[]): string | undefined {
+  const name = basename(words[0]).toLowerCase();
+  if (name !== "env") return undefined;
+
+  const args = words.slice(1);
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === "--" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(arg)) {
+      if (arg === "--") return undefined;
+      continue;
+    }
+    if (!arg.startsWith("-")) return undefined;
+    if (arg === "-S" || arg === "--split-string") return args[index + 1];
+    if (arg.startsWith("--split-string=")) {
+      return arg.slice("--split-string=".length);
+    }
+
+    const option = arg.toLowerCase().split("=", 1)[0];
+    if (ENV_OPTIONS_WITH_VALUE.has(option) && !arg.includes("=")) index++;
+  }
+  return undefined;
+}
+
+function unwrapCommand(words: string[]): string[] | undefined {
+  const name = basename(words[0]).toLowerCase();
+  if (!COMMAND_WRAPPERS.has(name)) return undefined;
+
+  const args = words.slice(1);
+  if (name === "command" && /^-[^-]*[vV]/.test(args[0] ?? "")) {
+    return undefined;
+  }
+  if (name === "sudo" && isSudoNonExecuting(args)) return undefined;
+
+  let index = 0;
+  while (index < args.length) {
+    const arg = args[index];
+    if (arg === "--") return args.slice(index + 1);
+
+    if (
+      (name === "env" || name === "sudo") &&
+      /^[A-Za-z_][A-Za-z0-9_]*=/.test(arg)
+    ) {
+      index++;
+      continue;
+    }
+    if (!arg.startsWith("-")) break;
+
+    const option = arg.toLowerCase().split("=", 1)[0];
+    const consumesValue =
+      !arg.includes("=") &&
+      ((name === "env" && ENV_OPTIONS_WITH_VALUE.has(option)) ||
+        (name === "sudo" && SUDO_OPTIONS_WITH_VALUE.has(option)) ||
+        (name === "exec" && option === "-a"));
+    index += consumesValue ? 2 : 1;
+  }
+
+  return index < args.length ? args.slice(index) : undefined;
+}
+
+function getShellCommand(words: string[]): string | undefined {
+  const name = basename(words[0]).toLowerCase();
+  if (!SHELL_LAUNCHERS.has(name)) return undefined;
+
+  for (let index = 1; index < words.length - 1; index++) {
+    const option = words[index];
+    if (option === "--" || !option.startsWith("-")) return undefined;
+    if (
+      option === "-c" ||
+      option === "--command" ||
+      (/^-[^-]+$/.test(option) && option.slice(1).includes("c"))
+    ) {
+      return words[index + 1];
+    }
+    if (SHELL_OPTIONS_WITH_VALUE.has(option) && !option.includes("=")) index++;
+  }
+  return undefined;
+}
+
+function isSudoNonExecuting(args: string[]): boolean {
+  const longModes = new Set([
+    "--help",
+    "--list",
+    "--remove-timestamp",
+    "--reset-timestamp",
+    "--validate",
+    "--version",
+  ]);
+  for (const arg of args) {
+    if (arg === "--" || (!arg.startsWith("-") && !arg.includes("="))) {
+      return false;
+    }
+    if (longModes.has(arg) || /^-[^-]*[lvkKV]/.test(arg)) return true;
+  }
+  return false;
+}
+
 function hasSshNoCommandFlag(args: string[]): boolean {
   return args.some((arg) => /^-[^-]*N/.test(arg));
 }
@@ -221,7 +453,13 @@ function suggestProcessName(words: string[]): string {
   const args = rawArgs.map((arg) => arg.toLowerCase());
 
   if (PACKAGE_MANAGERS.has(name)) {
-    const scriptName = getPackageManagerScript(args);
+    const invocation = stripPackageManagerOptions(rawArgs);
+    const normalized = invocation.map((arg) => arg.toLowerCase());
+    if (normalized[0] === "exec" || normalized[0] === "dlx") {
+      const executable = getPackageExecutable(invocation);
+      if (executable) return sanitizeProcessName(executable.name);
+    }
+    const scriptName = getPackageManagerScript(normalized);
     if (scriptName) return sanitizeProcessName(scriptName);
   }
 
