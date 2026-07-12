@@ -1,11 +1,13 @@
 import {
+  close as closeFile,
   closeSync,
   fstatSync,
+  ftruncate,
   openSync,
+  read as readFile,
   readSync,
   statSync,
-  writeFileSync,
-  writeSync,
+  write as writeFile,
 } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 
@@ -30,33 +32,70 @@ interface CombinedStreamState {
 export class BoundedLogFile {
   private size: number;
   private fd: number | null;
+  private acceptingWrites = true;
+  private failure: Error | null = null;
+  private queue: Promise<void> = Promise.resolve();
+  private closePromise: Promise<void> | null = null;
 
   constructor(
-    private readonly filePath: string,
+    filePath: string,
     private readonly options: BoundedLogOptions,
   ) {
     this.size = statSync(filePath).size;
-    this.fd = openSync(filePath, "a");
+    this.fd = openSync(filePath, "a+", 0o600);
   }
 
-  append(data: string | Buffer): void {
-    const input = typeof data === "string" ? Buffer.from(data) : data;
-    if (input.length === 0) return;
+  append(data: string | Buffer): Promise<void> {
+    if (!this.acceptingWrites || this.fd === null) {
+      return Promise.reject(new Error("Log file is closed"));
+    }
+    const input = Buffer.from(data);
+    if (input.length === 0) return this.queue;
 
-    if (this.fd === null) throw new Error("Log file is closed");
+    const operation = this.queue
+      .then(() => {
+        if (this.failure) throw this.failure;
+        return this.appendNow(input);
+      })
+      .catch((error: unknown) => {
+        this.failure =
+          error instanceof Error ? error : new Error("Log write failed");
+        throw this.failure;
+      });
+    this.queue = operation.catch(() => undefined);
+    return operation;
+  }
+
+  async flush(): Promise<void> {
+    await this.queue;
+    if (this.failure) throw this.failure;
+  }
+
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
+    this.acceptingWrites = false;
+    this.closePromise = this.queue
+      .then(async () => {
+        const fd = this.fd;
+        this.fd = null;
+        if (fd !== null) await closeFileAsync(fd);
+      })
+      .then(() => {
+        if (this.failure) throw this.failure;
+      });
+    this.queue = this.closePromise.then(
+      () => undefined,
+      () => undefined,
+    );
+    return this.closePromise;
+  }
+
+  private async appendNow(input: Buffer): Promise<void> {
+    const fd = this.fd;
+    if (fd === null) throw new Error("Log file is closed");
 
     if (this.size + input.length <= this.options.maxBytes) {
-      let offset = 0;
-      while (offset < input.length) {
-        const bytesWritten = writeSync(
-          this.fd,
-          input,
-          offset,
-          input.length - offset,
-        );
-        if (bytesWritten === 0) throw new Error("Unable to append log data");
-        offset += bytesWritten;
-      }
+      await writeAll(fd, input);
       this.size += input.length;
       return;
     }
@@ -69,20 +108,19 @@ export class BoundedLogFile {
     const inputTail = input.subarray(inputStart);
     const existingBytes = Math.max(0, retainBytes - inputTail.length);
     const existingStart = Math.max(0, this.size - existingBytes);
-    const existingTail = readFileTail(this.filePath, existingBytes, this.size);
+    const existingTail = await readFdTail(fd, existingBytes, this.size);
     let replacement = Buffer.concat([existingTail, inputTail]);
 
     const startsAtLineBoundary =
       existingBytes > 0
         ? existingStart === 0 ||
-          readByteAt(this.filePath, existingStart - 1) === 0x0a
+          (await readByteFromFd(fd, existingStart - 1)) === 0x0a
         : inputStart > 0
           ? input[inputStart - 1] === 0x0a
           : this.size === 0 ||
-            readByteAt(this.filePath, this.size - 1) === 0x0a;
+            (await readByteFromFd(fd, this.size - 1)) === 0x0a;
 
     if (!startsAtLineBoundary) {
-      // When possible, begin at a complete line after trimming old bytes.
       const firstNewline = replacement.indexOf(0x0a);
       if (firstNewline >= 0 && firstNewline < replacement.length - 1) {
         replacement = replacement.subarray(firstNewline + 1);
@@ -98,14 +136,9 @@ export class BoundedLogFile {
       }
     }
 
-    writeFileSync(this.filePath, replacement, { mode: 0o600 });
+    await truncateFileAsync(fd, 0);
+    await writeAll(fd, replacement);
     this.size = replacement.length;
-  }
-
-  close(): void {
-    if (this.fd === null) return;
-    closeSync(this.fd);
-    this.fd = null;
   }
 }
 
@@ -123,33 +156,36 @@ export class CombinedLogWriter {
     });
   }
 
-  write(stream: CombinedStream, data: Buffer): void {
+  write(stream: CombinedStream, data: Buffer): Promise<void> {
     const state = this.streams[stream];
-    if (state.ended) return;
-    this.appendText(stream, state.decoder.write(data));
+    if (state.ended) return Promise.resolve();
+    return this.appendText(stream, state.decoder.write(data));
   }
 
-  end(stream: CombinedStream): void {
+  end(stream: CombinedStream): Promise<void> {
     const state = this.streams[stream];
-    if (state.ended) return;
+    if (state.ended) return this.output.flush();
     state.ended = true;
-    this.appendText(stream, state.decoder.end(), true);
-    if (this.streams.stdout.ended && this.streams.stderr.ended) {
-      this.output.close();
-    }
+    const append = this.appendText(stream, state.decoder.end(), true);
+    return this.streams.stdout.ended && this.streams.stderr.ended
+      ? append.then(() => this.output.close())
+      : append;
   }
 
-  close(): void {
-    this.end("stdout");
-    this.end("stderr");
-    this.output.close();
+  async close(): Promise<void> {
+    await Promise.all([this.end("stdout"), this.end("stderr")]);
+    await this.output.close();
+  }
+
+  flush(): Promise<void> {
+    return this.output.flush();
   }
 
   private appendText(
     stream: CombinedStream,
     text: string,
     flush = false,
-  ): void {
+  ): Promise<void> {
     const state = this.streams[stream];
     const completeLines = `${state.pending}${text}`.split("\n");
     state.pending = completeLines.pop() ?? "";
@@ -168,10 +204,10 @@ export class CombinedLogWriter {
       lines.push(state.pending);
       state.pending = "";
     }
-    if (lines.length === 0) return;
+    if (lines.length === 0) return this.output.flush();
 
     const tag = stream === "stdout" ? "1:" : "2:";
-    this.output.append(lines.map((line) => `${tag}${line}\n`).join(""));
+    return this.output.append(lines.map((line) => `${tag}${line}\n`).join(""));
   }
 }
 
@@ -237,44 +273,100 @@ export function readTailLines(
   }
 }
 
-function readFileTail(
-  filePath: string,
+async function readFdTail(
+  fd: number,
   length: number,
   fileSize: number,
-): Buffer {
+): Promise<Buffer> {
   if (length <= 0 || fileSize <= 0) return Buffer.alloc(0);
 
   const bytesToRead = Math.min(length, fileSize);
   const buffer = Buffer.allocUnsafe(bytesToRead);
-  const fd = openSync(filePath, "r");
-  try {
-    let offset = 0;
-    while (offset < bytesToRead) {
-      const bytesRead = readSync(
-        fd,
-        buffer,
-        offset,
-        bytesToRead - offset,
-        fileSize - bytesToRead + offset,
-      );
-      if (bytesRead === 0) break;
-      offset += bytesRead;
-    }
-    return buffer.subarray(0, offset);
-  } finally {
-    closeSync(fd);
+  let offset = 0;
+  while (offset < bytesToRead) {
+    const bytesRead = await readFileAsync(
+      fd,
+      buffer,
+      offset,
+      bytesToRead - offset,
+      fileSize - bytesToRead + offset,
+    );
+    if (bytesRead === 0) break;
+    offset += bytesRead;
+  }
+  return buffer.subarray(0, offset);
+}
+
+async function readByteFromFd(
+  fd: number,
+  position: number,
+): Promise<number | undefined> {
+  if (position < 0) return undefined;
+  const buffer = Buffer.allocUnsafe(1);
+  return (await readFileAsync(fd, buffer, 0, 1, position)) === 1
+    ? buffer[0]
+    : undefined;
+}
+
+async function writeAll(fd: number, buffer: Buffer): Promise<void> {
+  let offset = 0;
+  while (offset < buffer.length) {
+    const bytesWritten = await writeFileAsync(
+      fd,
+      buffer,
+      offset,
+      buffer.length - offset,
+    );
+    if (bytesWritten === 0) throw new Error("Unable to append log data");
+    offset += bytesWritten;
   }
 }
 
-function readByteAt(filePath: string, position: number): number | undefined {
-  if (position < 0) return undefined;
-  const buffer = Buffer.allocUnsafe(1);
-  const fd = openSync(filePath, "r");
-  try {
-    return readSync(fd, buffer, 0, 1, position) === 1 ? buffer[0] : undefined;
-  } finally {
-    closeSync(fd);
-  }
+function readFileAsync(
+  fd: number,
+  buffer: Buffer,
+  offset: number,
+  length: number,
+  position: number,
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    readFile(fd, buffer, offset, length, position, (error, bytesRead) => {
+      if (error) reject(error);
+      else resolve(bytesRead);
+    });
+  });
+}
+
+function writeFileAsync(
+  fd: number,
+  buffer: Buffer,
+  offset: number,
+  length: number,
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    writeFile(fd, buffer, offset, length, null, (error, bytesWritten) => {
+      if (error) reject(error);
+      else resolve(bytesWritten);
+    });
+  });
+}
+
+function truncateFileAsync(fd: number, length: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    ftruncate(fd, length, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+function closeFileAsync(fd: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    closeFile(fd, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
 }
 
 function countByte(buffer: Buffer, value: number): number {

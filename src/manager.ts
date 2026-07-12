@@ -28,8 +28,10 @@ interface ManagedProcess extends ProcessInfo {
   leaderExitCode: number | null;
   leaderExitSignal: NodeJS.Signals | null;
   processError: boolean;
+  logError: boolean;
   closeWaiters: Set<() => void>;
-  closeLogs: () => void;
+  flushLogs: () => Promise<void>;
+  closeLogs: () => Promise<void>;
 }
 
 interface ProcessManagerOptions {
@@ -214,40 +216,43 @@ export class ProcessManager {
       stderrLog = new BoundedLogFile(stderrFile, LOG_FILE_OPTIONS);
       combinedLog = new CombinedLogWriter(combinedFile, LOG_FILE_OPTIONS);
     } catch (error) {
-      try {
-        stdoutLog?.close();
-        stderrLog?.close();
-        combinedLog?.close();
-      } catch {
-        // Continue cleaning up any files created before the failure.
-      }
+      void Promise.allSettled([
+        stdoutLog?.close(),
+        stderrLog?.close(),
+        combinedLog?.close(),
+      ]);
       this.removeProcessLogFiles(stdoutFile, stderrFile, combinedFile);
       throw error;
     }
 
+    let logClosePromise: Promise<void> | null = null;
+    const flushLogWriters = () =>
+      logClosePromise ??
+      Promise.all([
+        stdoutLog.flush(),
+        stderrLog.flush(),
+        combinedLog.flush(),
+      ]).then(() => undefined);
     const closeLogWriters = () => {
-      try {
-        stdoutLog.close();
-      } catch {
-        // Ignore log close failures
-      }
-      try {
-        stderrLog.close();
-      } catch {
-        // Ignore log close failures
-      }
-      try {
-        combinedLog.close();
-      } catch {
-        // Ignore log close failures
-      }
+      logClosePromise ??= Promise.allSettled([
+        stdoutLog.close(),
+        stderrLog.close(),
+        combinedLog.close(),
+      ]).then((results) => {
+        const failure = results.find(
+          (result): result is PromiseRejectedResult =>
+            result.status === "rejected",
+        );
+        if (failure) throw failure.reason;
+      });
+      return logClosePromise;
     };
 
     let child: ReturnType<typeof spawnCommand>;
     try {
       child = spawnCommand(command, cwd, this.getConfiguredShellPath());
     } catch (error) {
-      closeLogWriters();
+      void closeLogWriters().catch(() => {});
       this.removeProcessLogFiles(stdoutFile, stderrFile, combinedFile);
       throw error;
     }
@@ -274,62 +279,54 @@ export class ProcessManager {
       leaderExitCode: null,
       leaderExitSignal: null,
       processError: false,
+      logError: false,
       closeWaiters: new Set(),
+      flushLogs: flushLogWriters,
       closeLogs: closeLogWriters,
+    };
+
+    const recordLogFailures = (results: PromiseSettledResult<void>[]) => {
+      if (results.some((result) => result.status === "rejected")) {
+        managed.logError = true;
+      }
     };
 
     child.stdout?.on("data", (data: Buffer) => {
       if (!trackingStarted) return;
-      try {
-        stdoutLog.append(data);
-      } catch {
-        // Preserve the independent combined copy when possible.
-      }
-      try {
-        combinedLog.write("stdout", data);
-      } catch {
-        // Preserve the independent stdout copy when possible.
-      }
+      child.stdout?.pause();
+      void Promise.allSettled([
+        stdoutLog.append(data),
+        combinedLog.write("stdout", data),
+      ]).then((results) => {
+        recordLogFailures(results);
+        child.stdout?.resume();
+      });
     });
     child.stdout?.on("end", () => {
       if (!trackingStarted) return;
-      try {
-        combinedLog.end("stdout");
-      } catch {
-        // Ignore log write failures
-      }
-      try {
-        stdoutLog.close();
-      } catch {
-        // Ignore log close failures
-      }
+      void Promise.allSettled([
+        combinedLog.end("stdout"),
+        stdoutLog.close(),
+      ]).then(recordLogFailures);
     });
 
     child.stderr?.on("data", (data: Buffer) => {
       if (!trackingStarted) return;
-      try {
-        stderrLog.append(data);
-      } catch {
-        // Preserve the independent combined copy when possible.
-      }
-      try {
-        combinedLog.write("stderr", data);
-      } catch {
-        // Preserve the independent stderr copy when possible.
-      }
+      child.stderr?.pause();
+      void Promise.allSettled([
+        stderrLog.append(data),
+        combinedLog.write("stderr", data),
+      ]).then((results) => {
+        recordLogFailures(results);
+        child.stderr?.resume();
+      });
     });
     child.stderr?.on("end", () => {
       if (!trackingStarted) return;
-      try {
-        combinedLog.end("stderr");
-      } catch {
-        // Ignore log write failures
-      }
-      try {
-        stderrLog.close();
-      } catch {
-        // Ignore log close failures
-      }
+      void Promise.allSettled([
+        combinedLog.end("stderr"),
+        stderrLog.close(),
+      ]).then(recordLogFailures);
     });
 
     child.on("exit", (code, signal) => {
@@ -339,32 +336,34 @@ export class ProcessManager {
       managed.leaderExitSignal = signal;
     });
 
+    let closeObserved = false;
     child.on("close", (code, signal) => {
-      if (!trackingStarted || managed.leaderClosed) return;
+      if (!trackingStarted || closeObserved) return;
+      closeObserved = true;
 
-      managed.closeLogs();
       managed.leaderExited = true;
-      managed.leaderClosed = true;
       managed.leaderExitCode ??= code ?? (managed.processError ? -1 : null);
       managed.leaderExitSignal ??= signal;
-      for (const waiter of managed.closeWaiters) waiter();
-      managed.closeWaiters.clear();
-      this.finalizeIfGroupEnded(managed);
+      void managed
+        .closeLogs()
+        .catch(() => {
+          managed.logError = true;
+        })
+        .then(() => {
+          managed.leaderClosed = true;
+          for (const waiter of managed.closeWaiters) waiter();
+          managed.closeWaiters.clear();
+          this.finalizeIfGroupEnded(managed);
+        });
     });
 
     child.on("error", (err) => {
       if (!trackingStarted) return;
       const message = `Process error: ${err.message}\n`;
-      try {
-        stderrLog.append(message);
-      } catch {
-        // Preserve the independent combined copy when possible.
-      }
-      try {
-        combinedLog.write("stderr", Buffer.from(message));
-      } catch {
-        // Preserve the independent stderr copy when possible.
-      }
+      void Promise.allSettled([
+        stderrLog.append(message),
+        combinedLog.write("stderr", Buffer.from(message)),
+      ]).then(recordLogFailures);
       managed.processError = true;
     });
 
@@ -372,7 +371,7 @@ export class ProcessManager {
       managed.exitCode = -1;
       managed.success = false;
       managed.endTime = Date.now();
-      closeLogWriters();
+      void closeLogWriters().catch(() => {});
       this.removeProcessLogFiles(stdoutFile, stderrFile, combinedFile);
       throw new Error("Failed to spawn process: no process ID was assigned");
     }
@@ -419,16 +418,30 @@ export class ProcessManager {
     return { ok: false, reason: "not_found" };
   }
 
-  getOutput(
+  async getOutput(
     id: string,
     tailLines = 100,
-  ): { stdout: string[]; stderr: string[]; status: string } | null {
+  ): Promise<{
+    stdout: string[];
+    stderr: string[];
+    status: string;
+  } | null> {
     const managed = this.processes.get(id);
     if (!managed) return null;
 
+    try {
+      await managed.flushLogs();
+    } catch {
+      managed.logError = true;
+      return null;
+    }
+    if (managed.logError) return null;
     const stdout = this.readTailLines(managed.stdoutFile, tailLines);
     const stderr = this.readTailLines(managed.stderrFile, tailLines);
-    if (!stdout || !stderr) return null;
+    if (!stdout || !stderr) {
+      managed.logError = true;
+      return null;
+    }
 
     return {
       stdout,
@@ -437,15 +450,25 @@ export class ProcessManager {
     };
   }
 
-  getCombinedOutput(
+  async getCombinedOutput(
     id: string,
     tailLines = 100,
-  ): { type: "stdout" | "stderr"; text: string }[] | null {
+  ): Promise<{ type: "stdout" | "stderr"; text: string }[] | null> {
     const managed = this.processes.get(id);
     if (!managed) return null;
 
+    try {
+      await managed.flushLogs();
+    } catch {
+      managed.logError = true;
+      return null;
+    }
+    if (managed.logError) return null;
     const rawLines = this.readTailLines(managed.combinedFile, tailLines);
-    if (!rawLines) return null;
+    if (!rawLines) {
+      managed.logError = true;
+      return null;
+    }
     return rawLines.map((line) => {
       if (line.startsWith("2:")) {
         return { type: "stderr", text: line.slice(2) };
@@ -716,7 +739,7 @@ export class ProcessManager {
         continue;
       }
 
-      managed.closeLogs();
+      void managed.closeLogs().catch(() => {});
       try {
         rmSync(managed.stdoutFile, { force: true });
         rmSync(managed.stderrFile, { force: true });
@@ -763,7 +786,9 @@ export class ProcessManager {
     this.stopWatcher();
     this.events.removeAllListeners("event");
     this.shutdownKillAll();
-    for (const managed of this.processes.values()) managed.closeLogs();
+    for (const managed of this.processes.values()) {
+      void managed.closeLogs().catch(() => {});
+    }
 
     if (this.logDir) {
       try {

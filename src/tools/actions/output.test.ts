@@ -34,10 +34,11 @@ describe("executeOutput", () => {
     mocks.outputConfig.maxOutputLines = 200;
   });
 
-  it("bounds persisted rendering details independently of tool content", () => {
+  it("bounds persisted rendering details independently of tool content", async () => {
     const longLine = '\\"'.repeat(4000);
     const manager = {
       resolve: vi.fn(() => ({ ok: true, info: processInfo })),
+      get: vi.fn(() => processInfo),
       getOutput: vi.fn(() => ({
         stdout: Array.from({ length: 100 }, () => longLine),
         stderr: Array.from({ length: 100 }, () => longLine),
@@ -50,7 +51,7 @@ describe("executeOutput", () => {
       })),
     } as const;
 
-    const result = executeOutput({ id: "proc_1" }, manager as never);
+    const result = await executeOutput({ id: "proc_1" }, manager as never);
 
     expect(result.content[0]?.type).toBe("text");
     if (result.content[0]?.type === "text") {
@@ -72,10 +73,39 @@ describe("executeOutput", () => {
     expect(JSON.stringify(result.details)).not.toContain("�");
   });
 
-  it("reserves the only configured line for the truncation notice", () => {
+  it("uses the latest process status after awaiting log flush", async () => {
+    const exited = {
+      ...processInfo,
+      status: "exited" as const,
+      endTime: Date.now(),
+      exitCode: 0,
+      success: true,
+    };
+    const manager = {
+      resolve: vi.fn(() => ({ ok: true, info: processInfo })),
+      get: vi.fn(() => exited),
+      getOutput: vi.fn(async () => ({
+        stdout: ["done"],
+        stderr: [],
+        status: "exited",
+      })),
+      getLogFiles: vi.fn(() => null),
+    } as const;
+
+    const result = await executeOutput({ id: "proc_1" }, manager as never);
+    const content =
+      result.content[0]?.type === "text" ? result.content[0].text : "";
+
+    expect(content).toContain("[exit(0)]");
+    expect(content).not.toContain("still active");
+    expect(result.details.output?.status).toBe("exited");
+  });
+
+  it("reserves the only configured line for the truncation notice", async () => {
     mocks.outputConfig.maxOutputLines = 1;
     const manager = {
       resolve: vi.fn(() => ({ ok: true, info: processInfo })),
+      get: vi.fn(() => processInfo),
       getOutput: vi.fn(() => ({
         stdout: ["one", "two", "three"],
         stderr: [],
@@ -84,7 +114,7 @@ describe("executeOutput", () => {
       getLogFiles: vi.fn(() => null),
     } as const;
 
-    const result = executeOutput({ id: "proc_1" }, manager as never);
+    const result = await executeOutput({ id: "proc_1" }, manager as never);
 
     expect(result.content[0]).toMatchObject({ type: "text" });
     if (result.content[0]?.type === "text") {

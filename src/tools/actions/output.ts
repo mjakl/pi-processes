@@ -49,10 +49,10 @@ function resolveProcessResult(
   };
 }
 
-export function executeOutput(
+export async function executeOutput(
   params: OutputParams,
   manager: ProcessManager,
-): ExecuteResult {
+): Promise<ExecuteResult> {
   if (!params.id) {
     return {
       content: [{ type: "text", text: "Missing required parameter: id" }],
@@ -71,7 +71,7 @@ export function executeOutput(
 
   const proc = resolved.info;
   const { defaultTailLines } = configLoader.getConfig().output;
-  const output = manager.getOutput(proc.id, defaultTailLines);
+  const output = await manager.getOutput(proc.id, defaultTailLines);
   if (!output) {
     const message = `Could not read output for: ${proc.id}`;
     return {
@@ -84,10 +84,11 @@ export function executeOutput(
     };
   }
 
+  const latestProc = manager.get(proc.id) ?? proc;
   const logFiles = manager.getLogFiles(proc.id);
   const stdoutLines = output.stdout.length;
   const stderrLines = output.stderr.length;
-  const message = `"${sanitizeLine(proc.name)}" (${proc.id}) [${formatStatus(proc)}]: ${stdoutLines} stdout lines, ${stderrLines} stderr lines`;
+  const message = `"${sanitizeLine(latestProc.name)}" (${latestProc.id}) [${formatStatus(latestProc)}]: ${stdoutLines} stdout lines, ${stderrLines} stderr lines`;
 
   // Build sanitized text content, then truncate from the tail like bash does,
   // so the agent sees the most recent output.
@@ -100,7 +101,7 @@ export function executeOutput(
     outputParts.push("\nstderr:");
     outputParts.push(...output.stderr.map(sanitizeLine));
   }
-  if (LIVE_STATUSES.has(proc.status)) {
+  if (LIVE_STATUSES.has(latestProc.status)) {
     outputParts.push(
       "",
       "[Process is still active. This was a one-off snapshot; wait for the automatic process-end notification instead of calling process output/list/logs repeatedly.]",
@@ -112,7 +113,7 @@ export function executeOutput(
   const contentText = truncateTail(fullText, logFiles, maxOutputLines);
 
   const outputPreview = {
-    status: output.status,
+    status: latestProc.status,
     stdoutTotal: output.stdout.length,
     stderrTotal: output.stderr.length,
     hadAnsi: [...output.stdout, ...output.stderr].some(hasAnsi),

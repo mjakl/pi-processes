@@ -23,10 +23,15 @@ vi.mock("./utils", () => ({
 import type { ManagerEvent } from "./constants";
 import { ProcessManager } from "./manager";
 
+class FakeReadable extends EventEmitter {
+  pause = vi.fn();
+  resume = vi.fn();
+}
+
 class FakeChildProcess extends EventEmitter {
   pid: number | undefined;
-  stdout = new EventEmitter();
-  stderr = new EventEmitter();
+  stdout = new FakeReadable();
+  stderr = new FakeReadable();
   unref = vi.fn();
 
   constructor(pid?: number) {
@@ -140,6 +145,7 @@ describe("ProcessManager", () => {
     expect(mocks.killProcessGroup).toHaveBeenCalledTimes(1);
 
     children[1].emit("close", null, "SIGTERM");
+    await manager.getOutput(second.id);
     expect(endedEvents).toHaveLength(1);
     expect(endedEvents[0]).toMatchObject({ triggerAgentTurn: false });
   });
@@ -345,7 +351,11 @@ describe("ProcessManager", () => {
     controller.abort();
     const result = await killPromise;
 
-    expect(result.ok).toBe(true);
+    expect(result).toMatchObject({
+      ok: false,
+      reason: "confirmation_cancelled",
+    });
+    await manager.getOutput(proc.id);
     expect(manager.get(proc.id)).toMatchObject({
       status: "killed",
       success: false,
@@ -415,10 +425,11 @@ describe("ProcessManager", () => {
     expect(children).toHaveLength(16);
   });
 
-  it("bounds retained process records", () => {
+  it("bounds retained process records", async () => {
     for (let index = 0; index < 32; index++) {
-      manager.start(`process-${index}`, "true", process.cwd());
+      const proc = manager.start(`process-${index}`, "true", process.cwd());
       children[index].emit("close", 0, null);
+      await manager.getOutput(proc.id);
     }
 
     expect(() => manager.start("one-too-many", "true", process.cwd())).toThrow(
@@ -452,14 +463,14 @@ describe("ProcessManager", () => {
     }
   });
 
-  it("reports missing log files instead of treating them as empty", () => {
+  it("reports missing log files instead of treating them as empty", async () => {
     const proc = manager.start("server", "pnpm dev", process.cwd());
     rmSync(proc.stdoutFile);
 
-    expect(manager.getOutput(proc.id)).toBeNull();
+    expect(await manager.getOutput(proc.id)).toBeNull();
   });
 
-  it("preserves combined lines and UTF-8 across stream chunks", () => {
+  it("preserves combined lines and UTF-8 across stream chunks", async () => {
     const proc = manager.start("server", "pnpm dev", process.cwd());
     const emoji = Buffer.from("🔥");
 
@@ -471,15 +482,29 @@ describe("ProcessManager", () => {
     children[0].stdout.emit("end");
     children[0].stderr.emit("end");
 
-    expect(manager.getOutput(proc.id)?.stdout).toEqual(["hello", "partial🔥"]);
-    expect(manager.getCombinedOutput(proc.id)).toEqual([
+    expect(children[0].stdout.pause).toHaveBeenCalled();
+    expect((await manager.getOutput(proc.id))?.stdout).toEqual([
+      "hello",
+      "partial🔥",
+    ]);
+    expect(children[0].stdout.resume).toHaveBeenCalled();
+    expect(await manager.getCombinedOutput(proc.id)).toEqual([
       { type: "stderr", text: "warn" },
       { type: "stdout", text: "hello" },
       { type: "stdout", text: "partial🔥" },
     ]);
   });
 
-  it("keeps tracking descendants after the shell leader closes", () => {
+  it("flushes pending combined output before returning it", async () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    children[0].stderr.emit("data", Buffer.from("queued\n"));
+
+    expect(await manager.getCombinedOutput(proc.id)).toEqual([
+      { type: "stderr", text: "queued" },
+    ]);
+  });
+
+  it("keeps tracking descendants after the shell leader closes", async () => {
     const proc = manager.start("server", "pnpm dev", process.cwd());
     const ended = vi.fn();
     manager.onEvent((event) => {
@@ -494,6 +519,7 @@ describe("ProcessManager", () => {
       endTime: null,
     });
     expect(ended).not.toHaveBeenCalled();
+    await manager.getOutput(proc.id);
 
     mocks.isProcessGroupAlive.mockReturnValue(false);
     vi.advanceTimersByTime(5000);
@@ -522,6 +548,7 @@ describe("ProcessManager", () => {
     const proc = manager.start("server", "pnpm dev", process.cwd());
     mocks.isProcessGroupAlive.mockReturnValue(true);
     children[0].emit("close", 0, null);
+    await manager.getOutput(proc.id);
     mocks.isProcessAlive.mockReturnValue(true);
 
     const result = await manager.kill(proc.id, { signal: "SIGTERM" });
@@ -540,7 +567,7 @@ describe("ProcessManager", () => {
     expect(mocks.killProcessGroup).toHaveBeenCalledWith(proc.pid, "SIGKILL");
   });
 
-  it("waits for child close before finalizing a dead process group", () => {
+  it("waits for child close before finalizing a dead process group", async () => {
     const proc = manager.start("server", "pnpm dev", process.cwd());
     const ended = vi.fn();
     manager.onEvent((event) => {
@@ -552,6 +579,7 @@ describe("ProcessManager", () => {
     expect(ended).not.toHaveBeenCalled();
 
     children[0].emit("close", 0, null);
+    await manager.getOutput(proc.id);
 
     expect(manager.get(proc.id)).toMatchObject({
       status: "exited",
@@ -561,16 +589,18 @@ describe("ProcessManager", () => {
     expect(ended).toHaveBeenCalledTimes(1);
   });
 
-  it("finalizes child errors after close flushes the streams", () => {
+  it("finalizes child errors after close flushes the streams", async () => {
     const proc = manager.start("server", "pnpm dev", process.cwd());
 
     children[0].emit("error", new Error("process error"));
     expect(manager.get(proc.id)?.status).toBe("running");
-    expect(manager.getCombinedOutput(proc.id)).toEqual([
+    await manager.getOutput(proc.id);
+    expect(await manager.getCombinedOutput(proc.id)).toEqual([
       { type: "stderr", text: "Process error: process error" },
     ]);
 
     children[0].emit("close", null, null);
+    await manager.getOutput(proc.id);
     expect(manager.get(proc.id)).toMatchObject({
       status: "exited",
       exitCode: -1,

@@ -22,17 +22,19 @@ function endedProcess(overrides: Partial<ProcessInfo> = {}): ProcessInfo {
   };
 }
 
-function setupHarness() {
+function setupHarness(
+  combinedOutput: Array<{ type: "stdout" | "stderr"; text: string }> | null = [
+    { type: "stdout", text: "running tests" },
+    { type: "stderr", text: "\u001b[31mfailed\u001b[0m" },
+  ],
+) {
   let listener: ((event: ManagerEvent) => void) | undefined;
   const manager = {
     onEvent: vi.fn((nextListener: (event: ManagerEvent) => void) => {
       listener = nextListener;
       return vi.fn();
     }),
-    getCombinedOutput: vi.fn(() => [
-      { type: "stdout" as const, text: "running tests" },
-      { type: "stderr" as const, text: "\u001b[31mfailed\u001b[0m" },
-    ]),
+    getCombinedOutput: vi.fn(async () => combinedOutput),
   } as unknown as ProcessManager;
   const pi = { sendMessage: vi.fn() } as unknown as ExtensionAPI;
 
@@ -43,7 +45,7 @@ function setupHarness() {
 }
 
 describe("setupProcessEndHook", () => {
-  it("sends an LLM-visible process-end notification with process id and recent output", () => {
+  it("sends an LLM-visible process-end notification with process id and recent output", async () => {
     const { listener, pi } = setupHarness();
 
     listener({
@@ -52,7 +54,7 @@ describe("setupProcessEndHook", () => {
       triggerAgentTurn: true,
     });
 
-    expect(pi.sendMessage).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(1));
     const [message, options] = vi.mocked(pi.sendMessage).mock.calls[0] ?? [];
 
     expect(message).toMatchObject({
@@ -74,6 +76,20 @@ describe("setupProcessEndHook", () => {
       "This is the automatic process-end notification",
     );
     expect(options).toEqual({ triggerTurn: true, deliverAs: "steer" });
+  });
+
+  it("reports unavailable process logs in the notification", async () => {
+    const { listener, pi } = setupHarness(null);
+
+    listener({
+      type: "process_ended",
+      info: endedProcess(),
+      triggerAgentTurn: true,
+    });
+
+    await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(1));
+    const [message] = vi.mocked(pi.sendMessage).mock.calls[0] ?? [];
+    expect(message?.content).toContain("process logs could not be read");
   });
 
   it("does not enqueue a custom message for tool-triggered kills", () => {
