@@ -39,6 +39,7 @@ function read(overrides: Partial<AgentOutputRead> = {}): AgentOutputRead {
     hasNewOutput: stdout.length > 0 || stderr.length > 0,
     newStdoutLines: stdout.length,
     newStderrLines: stderr.length,
+    droppedEarlier: false,
     previousReadAt: Date.now() - 4000,
     emptyReads: 0,
     ...overrides,

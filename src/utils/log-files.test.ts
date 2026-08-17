@@ -9,7 +9,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { BoundedLogFile, CombinedLogWriter, readTailLines } from "./log-files";
+import {
+  BoundedLogFile,
+  CombinedLogWriter,
+  readLinesFrom,
+  readTailLines,
+} from "./log-files";
 
 describe("log file helpers", () => {
   let dir: string;
@@ -180,5 +185,96 @@ describe("log file helpers", () => {
     expect(eventLoopTurnRan).toBe(true);
     await append;
     expect(statSync(filePath).size).toBeLessThanOrEqual(4 * 1024 * 1024);
+  });
+
+  describe("readLinesFrom", () => {
+    it("returns only what was appended since the offset", () => {
+      writeFileSync(filePath, "one\ntwo\n");
+      const first = readLinesFrom(filePath, 0, 1024);
+      expect(first).toMatchObject({ lines: ["one", "two"], skipped: false });
+      expect(first?.nextOffset).toBe(8);
+
+      writeFileSync(filePath, "one\ntwo\nthree\n");
+      expect(
+        readLinesFrom(filePath, first?.nextOffset ?? 0, 1024),
+      ).toMatchObject({ lines: ["three"] });
+    });
+
+    it("re-reads an incomplete line until it is complete", () => {
+      writeFileSync(filePath, "Listen");
+      const partial = readLinesFrom(filePath, 0, 1024);
+      expect(partial).toMatchObject({ lines: ["Listen"], nextOffset: 0 });
+
+      writeFileSync(filePath, "Listening on :3000\n");
+      expect(
+        readLinesFrom(filePath, partial?.nextOffset ?? 0, 1024),
+      ).toMatchObject({ lines: ["Listening on :3000"] });
+    });
+
+    it("stops at the byte limit and continues from there", () => {
+      writeFileSync(filePath, "aaaa\nbbbb\ncccc\n");
+
+      const first = readLinesFrom(filePath, 0, 7);
+      expect(first).toMatchObject({ lines: ["aaaa"], skipped: false });
+
+      const second = readLinesFrom(filePath, first?.nextOffset ?? 0, 7);
+      expect(second).toMatchObject({ lines: ["bbbb"], skipped: false });
+      expect(readLinesFrom(filePath, second?.nextOffset ?? 0, 7)).toMatchObject(
+        {
+          lines: ["cccc"],
+        },
+      );
+    });
+
+    it("skips ahead to the newest output when asked to", () => {
+      writeFileSync(filePath, "aaaa\nbbbb\ncccc\n");
+
+      expect(
+        readLinesFrom(filePath, 0, 7, { preferNewest: true }),
+      ).toMatchObject({ lines: ["cccc"], skipped: true });
+    });
+
+    it("restarts when the file was rewritten below the offset", () => {
+      writeFileSync(filePath, "fresh\n");
+
+      expect(readLinesFrom(filePath, 9_000, 1024)).toMatchObject({
+        lines: ["fresh"],
+        skipped: true,
+      });
+    });
+
+    it("holds back an incomplete multi-byte character", () => {
+      const emoji = Buffer.from("🔥");
+      writeFileSync(
+        filePath,
+        Buffer.concat([Buffer.from("x"), emoji.subarray(0, 2)]),
+      );
+
+      const partial = readLinesFrom(filePath, 0, 1024);
+      expect(partial?.lines).toEqual(["x"]);
+
+      writeFileSync(
+        filePath,
+        Buffer.concat([Buffer.from("x"), emoji, Buffer.from("\n")]),
+      );
+      expect(
+        readLinesFrom(filePath, partial?.nextOffset ?? 0, 1024)?.lines,
+      ).toEqual(["x🔥"]);
+    });
+
+    it("makes progress on a line longer than the read limit", () => {
+      writeFileSync(filePath, `${"x".repeat(20)}\n`);
+
+      const first = readLinesFrom(filePath, 0, 8);
+      expect(first?.lines).toEqual(["xxxxxxxx"]);
+      expect(first?.nextOffset).toBe(8);
+      expect(readLinesFrom(filePath, first?.nextOffset ?? 0, 8)?.lines).toEqual(
+        ["xxxxxxxx"],
+      );
+    });
+
+    it("reports unreadable files instead of empty output", () => {
+      expect(readLinesFrom(join(dir, "missing.log"), 0, 1024)).toBeNull();
+    });
   });
 });

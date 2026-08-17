@@ -77,6 +77,8 @@ export interface AgentOutputRead {
   hasNewOutput: boolean;
   newStdoutLines: number;
   newStderrLines: number;
+  /** Whether output was skipped because the agent fell too far behind. */
+  droppedEarlier: boolean;
   previousReadAt: number | null;
   emptyReads: number;
 }

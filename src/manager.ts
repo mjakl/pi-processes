@@ -19,27 +19,27 @@ import { spawnCommand } from "./utils/command-executor";
 import {
   BoundedLogFile,
   CombinedLogWriter,
+  readLinesFrom as readLogLinesFrom,
   readTailLines as readLogTailLines,
 } from "./utils/log-files";
 
-/**
- * How much of a stream has been written. `lines` counts completed lines, so a
- * trailing line without a newline is only visible through `partial`.
- */
-interface StreamProgress {
-  lines: number;
-  partial: boolean;
+/** Position of a log reader: what it consumed, and the size it last observed. */
+interface LogCursor {
+  offset: number;
+  end: number;
 }
+
+type StreamName = "stdout" | "stderr";
+type StreamCursors = Record<StreamName, LogCursor>;
+/** Scanners only track what they consumed; they never skip ahead. */
+type ScanCursors = Record<StreamName, { offset: number }>;
 
 interface ManagedProcess extends ProcessInfo {
   lastSignalSent: NodeJS.Signals | null;
   combinedFile: string;
   triggerAgentTurnOnEnd: boolean;
-  stdoutProgress: StreamProgress;
-  stderrProgress: StreamProgress;
-  /** Lines already handed to the agent, so later reads only return new output. */
-  agentSeenStdout: number;
-  agentSeenStderr: number;
+  /** What the agent has already been shown, so later reads only return new output. */
+  agentCursors: StreamCursors;
   agentReadAt: number | null;
   agentEmptyReads: number;
   leaderExited: boolean;
@@ -62,10 +62,9 @@ const MAX_LIVE_PROCESSES = 16;
 const MAX_RETAINED_PROCESSES = 32;
 const LOG_FILE_MAX_BYTES = 5 * 1024 * 1024;
 const LOG_FILE_RETAIN_BYTES = 4 * 1024 * 1024;
-const TAIL_READ_MAX_BYTES = 512 * 1024;
+const LOG_READ_MAX_BYTES = 512 * 1024;
 const CHILD_CLOSE_WAIT_MS = 500;
 const WAIT_POLL_MS = 200;
-const WAIT_SCAN_MAX_LINES = 2000;
 const LOG_FILE_OPTIONS = {
   maxBytes: LOG_FILE_MAX_BYTES,
   retainBytes: LOG_FILE_RETAIN_BYTES,
@@ -308,10 +307,10 @@ export class ProcessManager {
       lastSignalSent: null,
       combinedFile,
       triggerAgentTurnOnEnd: true,
-      stdoutProgress: { lines: 0, partial: false },
-      stderrProgress: { lines: 0, partial: false },
-      agentSeenStdout: 0,
-      agentSeenStderr: 0,
+      agentCursors: {
+        stdout: { offset: 0, end: 0 },
+        stderr: { offset: 0, end: 0 },
+      },
       agentReadAt: null,
       agentEmptyReads: 0,
       leaderExited: false,
@@ -334,7 +333,6 @@ export class ProcessManager {
 
     child.stdout?.on("data", (data: Buffer) => {
       if (!trackingStarted) return;
-      recordStreamProgress(managed.stdoutProgress, data);
       child.stdout?.pause();
       void Promise.allSettled([
         stdoutLog.append(data),
@@ -354,7 +352,6 @@ export class ProcessManager {
 
     child.stderr?.on("data", (data: Buffer) => {
       if (!trackingStarted) return;
-      recordStreamProgress(managed.stderrProgress, data);
       child.stderr?.pause();
       void Promise.allSettled([
         stderrLog.append(data),
@@ -403,7 +400,6 @@ export class ProcessManager {
     child.on("error", (err) => {
       if (!trackingStarted) return;
       const message = `Process error: ${err.message}\n`;
-      recordStreamProgress(managed.stderrProgress, Buffer.from(message));
       void Promise.allSettled([
         stderrLog.append(message),
         combinedLog.write("stderr", Buffer.from(message)),
@@ -514,43 +510,76 @@ export class ProcessManager {
     }
     if (managed.logError) return null;
 
-    const stdoutTotal = writtenLines(managed.stdoutProgress);
-    const stderrTotal = writtenLines(managed.stderrProgress);
     const firstRead = managed.agentReadAt === null;
-    const newStdoutLines = Math.max(0, stdoutTotal - managed.agentSeenStdout);
-    const newStderrLines = Math.max(0, stderrTotal - managed.agentSeenStderr);
-
-    const stdout = this.readTailLines(
-      managed.stdoutFile,
-      Math.min(newStdoutLines, maxLines),
-    );
-    const stderr = this.readTailLines(
-      managed.stderrFile,
-      Math.min(newStderrLines, maxLines),
-    );
+    const stdout = this.readAgentLines(managed, "stdout");
+    const stderr = this.readAgentLines(managed, "stderr");
     if (!stdout || !stderr) {
       managed.logError = true;
       return null;
     }
 
     const previousReadAt = managed.agentReadAt;
-    const hasNewOutput = stdout.length > 0 || stderr.length > 0;
-    managed.agentSeenStdout = stdoutTotal;
-    managed.agentSeenStderr = stderrTotal;
+    const hasNewOutput = stdout.lines.length > 0 || stderr.lines.length > 0;
     managed.agentReadAt = Date.now();
     managed.agentEmptyReads = hasNewOutput ? 0 : managed.agentEmptyReads + 1;
 
     return {
-      stdout,
-      stderr,
+      stdout: stdout.lines.slice(-maxLines),
+      stderr: stderr.lines.slice(-maxLines),
       status: managed.status,
       firstRead,
       hasNewOutput,
-      newStdoutLines,
-      newStderrLines,
+      newStdoutLines: stdout.lines.length,
+      newStderrLines: stderr.lines.length,
+      droppedEarlier: stdout.skipped || stderr.skipped,
       previousReadAt,
       emptyReads: managed.agentEmptyReads,
     };
+  }
+
+  /**
+   * Read what a stream has written since the agent last looked, newest output
+   * first if it fell behind. Returns no lines when the file has not grown, so an
+   * unchanged process reads as unchanged even while a line is still incomplete.
+   */
+  private readAgentLines(
+    managed: ManagedProcess,
+    stream: StreamName,
+  ): { lines: string[]; skipped: boolean } | null {
+    const cursor = managed.agentCursors[stream];
+    const result = readLogLinesFrom(
+      streamFile(managed, stream),
+      cursor.offset,
+      LOG_READ_MAX_BYTES,
+      { preferNewest: true },
+    );
+    if (!result) return null;
+    if (result.endOffset === cursor.end) return { lines: [], skipped: false };
+
+    cursor.offset = result.nextOffset;
+    cursor.end = result.endOffset;
+    return { lines: result.lines, skipped: result.skipped };
+  }
+
+  /**
+   * Read the next bounded step of a stream without skipping anything, so a
+   * caller can catch up on a backlog by looping until nothing more is consumed.
+   */
+  private readScanLines(
+    managed: ManagedProcess,
+    stream: StreamName,
+    cursor: { offset: number },
+  ): { lines: string[]; advanced: boolean } | null {
+    const result = readLogLinesFrom(
+      streamFile(managed, stream),
+      cursor.offset,
+      LOG_READ_MAX_BYTES,
+    );
+    if (!result) return null;
+
+    const advanced = result.nextOffset !== cursor.offset;
+    cursor.offset = result.nextOffset;
+    return { lines: result.lines, advanced };
   }
 
   /**
@@ -593,7 +622,10 @@ export class ProcessManager {
     }
 
     const pattern = opts.pattern ?? "";
-    const scanned = { stdout: 0, stderr: 0 };
+    const scanned: ScanCursors = {
+      stdout: { offset: 0 },
+      stderr: { offset: 0 },
+    };
     for (;;) {
       const match = await this.scanForPattern(managed, scanned, pattern);
       if (match === null) return null;
@@ -625,14 +657,16 @@ export class ProcessManager {
   }
 
   /**
-   * Test output written since the previous scan. Returns `undefined` when the
-   * pattern was not seen yet and `null` when the logs became unreadable.
+   * Test output written since the previous scan. Reads in bounded steps until
+   * it catches up, so a backlog is scanned rather than skipped. Returns
+   * `undefined` when the pattern was not seen yet and `null` when the logs
+   * became unreadable.
    */
   private async scanForPattern(
     managed: ManagedProcess,
-    scanned: { stdout: number; stderr: number },
+    scanned: ScanCursors,
     pattern: string,
-  ): Promise<{ line: string; stream: "stdout" | "stderr" } | undefined | null> {
+  ): Promise<{ line: string; stream: StreamName } | undefined | null> {
     try {
       await managed.flushLogs();
     } catch {
@@ -642,25 +676,20 @@ export class ProcessManager {
 
     const needle = pattern.toLowerCase();
     for (const stream of ["stdout", "stderr"] as const) {
-      const progress =
-        stream === "stdout" ? managed.stdoutProgress : managed.stderrProgress;
-      const total = writtenLines(progress);
-      if (total <= scanned[stream]) continue;
+      for (;;) {
+        const result = this.readScanLines(managed, stream, scanned[stream]);
+        if (!result) {
+          managed.logError = true;
+          return null;
+        }
 
-      const filePath =
-        stream === "stdout" ? managed.stdoutFile : managed.stderrFile;
-      const lines = this.readTailLines(
-        filePath,
-        Math.min(total - scanned[stream], WAIT_SCAN_MAX_LINES),
-      );
-      scanned[stream] = total;
-      if (!lines) {
-        managed.logError = true;
-        return null;
+        const hit = result.lines.find((line) =>
+          line.toLowerCase().includes(needle),
+        );
+        if (hit) return { line: hit, stream };
+        // Only an incomplete trailing line is left; it is re-read next scan.
+        if (!result.advanced) break;
       }
-
-      const hit = lines.find((line) => line.toLowerCase().includes(needle));
-      if (hit) return { line: hit, stream };
     }
 
     return undefined;
@@ -1030,7 +1059,7 @@ export class ProcessManager {
   }
 
   private readTailLines(filePath: string, lines: number): string[] | null {
-    return readLogTailLines(filePath, lines, TAIL_READ_MAX_BYTES);
+    return readLogTailLines(filePath, lines, LOG_READ_MAX_BYTES);
   }
 
   private toProcessInfo(managed: ManagedProcess): ProcessInfo {
@@ -1051,15 +1080,6 @@ export class ProcessManager {
   }
 }
 
-function recordStreamProgress(progress: StreamProgress, data: Buffer): void {
-  if (data.length === 0) return;
-  for (const byte of data) {
-    if (byte === 0x0a) progress.lines++;
-  }
-  progress.partial = data[data.length - 1] !== 0x0a;
-}
-
-/** Lines a reader would see, including a trailing line without a newline. */
-function writtenLines(progress: StreamProgress): number {
-  return progress.lines + (progress.partial ? 1 : 0);
+function streamFile(managed: ManagedProcess, stream: StreamName): string {
+  return stream === "stdout" ? managed.stdoutFile : managed.stderrFile;
 }
