@@ -216,6 +216,13 @@ After dependency changes, also verify the lockfile with:
 pnpm install --frozen-lockfile --ignore-scripts
 ```
 
+### Releasing
+
+1. Update `version` in `package.json` and add the release to `CHANGELOG.md`.
+2. Check what would ship: `npm pack --dry-run` (source only; no test files).
+3. Publish from `main` with a clean tree: `pnpm publish --access public`. `prepublishOnly` runs lint, typecheck, and tests first.
+4. Tag the release: `git tag v<version> && git push origin v<version>`.
+
 ## License
 
 MIT
