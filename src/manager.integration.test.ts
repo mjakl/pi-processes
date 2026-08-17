@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { ProcessManager } from "./manager";
 
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 describe("ProcessManager (real processes)", () => {
   it("waits for a pattern, then for exit, and reads output incrementally", async () => {
     const manager = new ProcessManager();
@@ -44,6 +46,78 @@ describe("ProcessManager (real processes)", () => {
         timeoutMs: 300,
       });
       expect(timedOut).toMatchObject({ reason: "exited" });
+    } finally {
+      manager.cleanup();
+    }
+  }, 20000);
+
+  it("matches a line that was still being written when first seen", async () => {
+    const manager = new ProcessManager();
+    try {
+      const proc = manager.start(
+        "split",
+        "printf 'Listen'; sleep 0.4; printf 'ing on :3000\\n'; sleep 0.4; echo done",
+        process.cwd(),
+      );
+
+      // The first scan sees "Listen" without its newline; the pattern only
+      // completes afterwards, so the cursor must re-read that line.
+      expect(
+        await manager.waitFor(proc.id, {
+          until: "output",
+          pattern: "listening on",
+          timeoutMs: 5000,
+        }),
+      ).toMatchObject({ reason: "matched", line: "Listening on :3000" });
+    } finally {
+      manager.cleanup();
+    }
+  }, 20000);
+
+  it("returns a growing line to the agent once it is complete", async () => {
+    const manager = new ProcessManager();
+    try {
+      const proc = manager.start(
+        "growing",
+        "printf 'Listen'; sleep 0.5; printf 'ing on :3000\\n'; sleep 1",
+        process.cwd(),
+      );
+
+      await delay(250);
+      expect((await manager.readAgentOutput(proc.id, 100))?.stdout).toEqual([
+        "Listen",
+      ]);
+      expect(await manager.readAgentOutput(proc.id, 100)).toMatchObject({
+        hasNewOutput: false,
+      });
+
+      await delay(500);
+      expect(await manager.readAgentOutput(proc.id, 100)).toMatchObject({
+        stdout: ["Listening on :3000"],
+        hasNewOutput: true,
+      });
+    } finally {
+      manager.cleanup();
+    }
+  }, 20000);
+
+  it("scans a backlog instead of only its newest lines", async () => {
+    const manager = new ProcessManager();
+    try {
+      const proc = manager.start(
+        "backlog",
+        "echo 'MARKER listening on :3000'; for i in $(seq 1 3000); do echo filler-$i; done; sleep 5",
+        process.cwd(),
+      );
+      await delay(800);
+
+      expect(
+        await manager.waitFor(proc.id, {
+          until: "output",
+          pattern: "MARKER listening on",
+          timeoutMs: 2000,
+        }),
+      ).toMatchObject({ reason: "matched" });
     } finally {
       manager.cleanup();
     }

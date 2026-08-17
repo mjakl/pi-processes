@@ -136,7 +136,10 @@ function summarize(proc: ProcessInfo, output: AgentOutputRead): string {
   const header = `"${sanitizeLine(proc.name)}" (${proc.id}) [${formatStatus(proc)}]`;
   if (output.hasNewOutput) {
     const scope = output.firstRead ? "" : " new";
-    return `${header}: ${output.newStdoutLines}${scope} stdout lines, ${output.newStderrLines}${scope} stderr lines`;
+    const dropped = output.droppedEarlier
+      ? " (earlier output skipped; read the log files for all of it)"
+      : "";
+    return `${header}: ${output.newStdoutLines}${scope} stdout lines, ${output.newStderrLines}${scope} stderr lines${dropped}`;
   }
   if (output.firstRead) {
     return `${header}: no output yet`;

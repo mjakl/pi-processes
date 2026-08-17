@@ -230,6 +230,101 @@ export class CombinedLogWriter {
   }
 }
 
+export interface LogReadResult {
+  lines: string[];
+  /**
+   * Where to continue reading. Never advances past an incomplete trailing line,
+   * so a line that is still being written is re-read once it is complete.
+   */
+  nextOffset: number;
+  /** File size this read observed; unchanged size means nothing was written. */
+  endOffset: number;
+  /** Whether output between the requested offset and the returned lines was skipped. */
+  skipped: boolean;
+}
+
+/**
+ * Read forward from a byte offset. Callers keep the returned `nextOffset` to
+ * read only what is new, which stays correct while a line grows across writes
+ * and while the bounded log rewrites itself.
+ *
+ * A read never returns more than `maxBytes`. With `preferNewest`, a larger
+ * backlog is skipped so the newest output is returned; otherwise the read stops
+ * early and the next call continues where this one stopped.
+ */
+export function readLinesFrom(
+  filePath: string,
+  offset: number,
+  maxBytes: number,
+  options: { preferNewest?: boolean } = {},
+): LogReadResult | null {
+  let fd: number | null = null;
+  try {
+    fd = openSync(filePath, "r");
+    const size = fstatSync(fd).size;
+
+    let start = Math.max(0, offset);
+    let skipped = false;
+    // The bounded log trims itself by rewriting the file, which moves earlier
+    // content out from under the offset.
+    if (start > size) {
+      start = 0;
+      skipped = true;
+    }
+    if (options.preferNewest && size - start > maxBytes) {
+      start = size - maxBytes;
+      skipped = true;
+    }
+    if (start >= size) {
+      return { lines: [], nextOffset: start, endOffset: size, skipped };
+    }
+
+    const length = Math.min(size - start, maxBytes);
+    const buffer = Buffer.allocUnsafe(length);
+    const bytesRead = readSync(fd, buffer, 0, length, start);
+    let content = buffer.subarray(0, bytesRead);
+    let contentStart = start;
+
+    if (skipped && start > 0) {
+      const firstNewline = content.indexOf(0x0a);
+      if (firstNewline === -1) {
+        return { lines: [], nextOffset: size, endOffset: size, skipped };
+      }
+      content = content.subarray(firstNewline + 1);
+      contentStart = start + firstNewline + 1;
+    }
+
+    // write() without end() drops an incomplete trailing character instead of
+    // decoding it as a replacement; those bytes stay unconsumed.
+    const text = new StringDecoder("utf8").write(content);
+    const lines = text.split("\n");
+    if (lines.at(-1) === "") lines.pop();
+
+    const reachedEnd = start + bytesRead >= size;
+    const lastNewline = content.lastIndexOf(0x0a);
+    let nextOffset: number;
+    if (lastNewline >= 0) {
+      nextOffset = contentStart + lastNewline + 1;
+      // A trailing fragment left by the byte limit is not a line yet; it is
+      // read again from `nextOffset`.
+      if (!reachedEnd && content.at(-1) !== 0x0a) lines.pop();
+    } else if (reachedEnd) {
+      // One incomplete line so far: keep it visible, but do not consume it.
+      nextOffset = contentStart;
+    } else {
+      // A single line longer than the read limit: consume what was decoded so
+      // reading keeps making progress.
+      nextOffset = contentStart + Buffer.byteLength(text);
+    }
+
+    return { lines, nextOffset, endOffset: size, skipped };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+}
+
 export function readTailLines(
   filePath: string,
   lineLimit: number,
