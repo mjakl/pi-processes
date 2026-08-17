@@ -43,6 +43,7 @@ describe("process tool contract", () => {
     expect(action.type).toBe("string");
     expect(action.enum).toEqual([
       "start",
+      "wait",
       "list",
       "output",
       "logs",
@@ -91,9 +92,57 @@ describe("process tool contract", () => {
     expect(manager.list).not.toHaveBeenCalled();
   });
 
+  it("keeps wait parameters consistent with the requested condition", async () => {
+    const manager = {
+      resolve: vi.fn(() => ({ ok: true, info: { id: "proc_1" } })),
+      waitFor: vi.fn(async () => ({
+        reason: "timeout",
+        info: {
+          id: "proc_1",
+          name: "server",
+          status: "running",
+          startTime: Date.now(),
+          endTime: null,
+          exitCode: null,
+          success: null,
+        },
+      })),
+      getCombinedOutput: vi.fn(async () => []),
+    } as unknown as ProcessManager;
+    const tool = captureTool(manager);
+    const call = (params: Record<string, unknown>) =>
+      tool.execute("call", params, undefined, undefined, {
+        cwd: process.cwd(),
+      });
+
+    await expect(call({ action: "wait" })).rejects.toThrow(
+      "Missing required parameter: id",
+    );
+    await expect(
+      call({ action: "wait", id: "server", until: "output" }),
+    ).rejects.toThrow("Missing required parameter: pattern");
+    await expect(
+      call({ action: "wait", id: "server", pattern: "ready" }),
+    ).rejects.toThrow('Parameter "pattern" requires until="output"');
+    await expect(
+      call({ action: "wait", id: "server", timeoutSeconds: 4000 }),
+    ).rejects.toThrow('Parameter "timeoutSeconds"');
+    await expect(call({ action: "list", pattern: "ready" })).rejects.toThrow(
+      'Parameter "pattern" is not valid for list',
+    );
+    expect(manager.waitFor).not.toHaveBeenCalled();
+
+    await call({ action: "wait", id: "server", timeoutSeconds: 5 });
+    expect(manager.waitFor).toHaveBeenCalledWith(
+      "proc_1",
+      expect.objectContaining({ until: "exit", timeoutMs: 5000 }),
+    );
+  });
+
   it("throws for operational failures so Pi marks the result as an error", async () => {
     const manager = {
       resolve: vi.fn(() => ({ ok: false, reason: "not_found" })),
+      list: vi.fn(() => []),
     } as unknown as ProcessManager;
     const tool = captureTool(manager);
 

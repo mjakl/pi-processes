@@ -84,7 +84,7 @@ async function buildAgentMessage(
 
   lines.push(
     "",
-    "This is the automatic process-end notification. Do not call process list/output/logs just to check whether it finished; use process output once only if you need more logs for debugging.",
+    "This is the automatic process-end notification, so the process is finished; use process output or process logs only if you need more of what it printed.",
   );
 
   return lines.join("\n");

@@ -1,7 +1,9 @@
 import type { ProcessInfo, ProcessPreview } from "../constants";
-import { sanitizeLine, truncateUtf8Bytes } from "../utils";
+import type { ProcessManager } from "../manager";
+import { formatStatus, sanitizeLine, truncateUtf8Bytes } from "../utils";
 
 const MAX_AMBIGUOUS_MATCHES = 10;
+const MAX_LISTED_CANDIDATES = 10;
 
 export function compactProcessInfo(process: ProcessInfo): ProcessPreview {
   return {
@@ -15,6 +17,31 @@ export function compactProcessInfo(process: ProcessInfo): ProcessPreview {
     exitCode: process.exitCode,
     success: process.success,
   };
+}
+
+/**
+ * Name the known processes so a mistyped id does not cost an extra list call.
+ */
+export function formatUnknownProcessMessage(
+  id: string,
+  manager: ProcessManager,
+): string {
+  const processes = manager.list();
+  const shown = processes.slice(0, MAX_LISTED_CANDIDATES);
+  const known = shown
+    .map(
+      (process) =>
+        `${truncateUtf8Bytes(sanitizeLine(process.id), 128)} ("${truncateUtf8Bytes(sanitizeLine(process.name), 64)}") [${formatStatus(process)}]`,
+    )
+    .join(", ");
+  const omitted = processes.length - shown.length;
+  const more = omitted > 0 ? `, ... (${omitted} more)` : "";
+  const candidates =
+    processes.length > 0
+      ? ` Known processes: ${known}${more}`
+      : " No processes have been started in this session.";
+
+  return `Process not found: ${truncateUtf8Bytes(sanitizeLine(id), 256)}.${candidates}`;
 }
 
 export function formatAmbiguousProcessMessage(

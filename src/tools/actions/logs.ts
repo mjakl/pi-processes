@@ -1,7 +1,10 @@
 import type { ExecuteResult } from "../../constants";
 import type { ProcessManager } from "../../manager";
 import { sanitizeLine } from "../../utils";
-import { formatAmbiguousProcessMessage } from "../process-details";
+import {
+  formatAmbiguousProcessMessage,
+  formatUnknownProcessMessage,
+} from "../process-details";
 
 interface LogsParams {
   id?: string;
@@ -24,22 +27,10 @@ export function executeLogs(
 
   const resolved = manager.resolve(params.id);
   if (!resolved.ok) {
-    if (resolved.reason === "ambiguous") {
-      const message = formatAmbiguousProcessMessage(
-        params.id,
-        resolved.matches ?? [],
-      );
-      return {
-        content: [{ type: "text", text: message }],
-        details: {
-          action: "logs",
-          success: false,
-          message,
-        },
-      };
-    }
-
-    const message = `Process not found: ${sanitizeLine(params.id)}`;
+    const message =
+      resolved.reason === "ambiguous"
+        ? formatAmbiguousProcessMessage(params.id, resolved.matches ?? [])
+        : formatUnknownProcessMessage(params.id, manager);
     return {
       content: [{ type: "text", text: message }],
       details: {

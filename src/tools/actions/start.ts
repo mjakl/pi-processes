@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ExecuteResult } from "../../constants";
 import {
-  analyzeManagedCommand,
+  analyzeBackgroundCommand,
   hasDetachedExecution,
 } from "../../hooks/background-blocker";
 import type { ProcessManager } from "../../manager";
@@ -11,7 +11,6 @@ import { compactProcessInfo } from "../process-details";
 interface StartParams {
   name?: string;
   command?: string;
-  continueAfterStart?: boolean;
 }
 
 export function executeStart(
@@ -41,7 +40,7 @@ export function executeStart(
   }
 
   if (
-    analyzeManagedCommand(params.command)?.kind === "background" ||
+    analyzeBackgroundCommand(params.command) ||
     hasDetachedExecution(params.command)
   ) {
     const message =
@@ -70,12 +69,8 @@ export function executeStart(
       };
     }
 
-    const shouldContinue = params.continueAfterStart === true;
-    const nextStep = shouldContinue
-      ? "Continue with specific non-polling work now. Do not call process list/output/logs just to wait; the extension will notify you when this process ends."
-      : "This turn will stop after start so you can wait for the automatic process-end notification. Do not call process list/output/logs just to check whether it is still running.";
-
     const startedAt = formatTimestamp(proc.startTime);
+    const nextStep = `To wait for it, call process wait id="${proc.id}" (until="exit", or until="output" with a pattern). You are notified automatically if it ends while you do other work.`;
     const message = `Started "${sanitizeLine(proc.name)}" (${proc.id}, PID: ${proc.pid})\nStarted at: ${startedAt}\nLogs: ${proc.stdoutFile}\n${nextStep}`;
     return {
       content: [{ type: "text", text: message }],
@@ -85,7 +80,6 @@ export function executeStart(
         message,
         process: compactProcessInfo(proc),
       },
-      terminate: !shouldContinue,
     };
   } catch (error) {
     const message =

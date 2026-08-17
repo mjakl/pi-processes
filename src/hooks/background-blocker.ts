@@ -1,7 +1,12 @@
 /**
- * Blocks background bash commands (e.g. `cmd &`, `nohup cmd`) and obvious
- * long-running foreground commands (e.g. `pnpm dev`, `tail -f`) and guides
- * the model to use the process tool instead.
+ * Blocks bash commands that detach from the session (e.g. `cmd &`, `setsid cmd`,
+ * `gunicorn --daemon`) and guides the model to the process tool instead.
+ *
+ * Whether a command is *long-running* is not decidable from its name, so this
+ * hook does not try: routing long work to the process tool is the job of the
+ * tool description and prompt guidelines, and an unnoticed long command is
+ * bounded by the bash timeout hook. What is decidable, and what breaks process
+ * supervision, is whether a command escapes the shell it was started from.
  *
  * Controlled via config: `interception.blockBackgroundCommands`.
  */
@@ -25,21 +30,6 @@ const BACKGROUND_CMD_NAMES = new Set(["daemonize", "disown", "setsid"]);
 const BACKGROUND_PATTERN = /&\s*$/;
 const PACKAGE_MANAGERS = new Set(["npm", "pnpm", "yarn", "bun"]);
 const PACKAGE_EXECUTORS = new Set(["npx", "bunx"]);
-const LONG_RUNNING_SCRIPT_NAMES = new Set([
-  "dev",
-  "start",
-  "serve",
-  "preview",
-  "watch",
-]);
-const DIRECT_LONG_RUNNING_COMMANDS = new Set([
-  "vite",
-  "nodemon",
-  "webpack-dev-server",
-  "uvicorn",
-  "foreman",
-  "honcho",
-]);
 const SHELL_LAUNCHERS = new Set(["bash", "sh", "zsh", "fish"]);
 const COMMAND_WRAPPERS = new Set([
   "command",
@@ -117,26 +107,6 @@ const SHELL_OPTIONS_WITH_VALUE = new Set([
   "-o",
   "--init-file",
   "--rcfile",
-]);
-const KUBECTL_OPTIONS_WITH_VALUE = new Set([
-  "--as",
-  "--as-group",
-  "--cache-dir",
-  "--certificate-authority",
-  "--client-certificate",
-  "--client-key",
-  "--cluster",
-  "--context",
-  "--kubeconfig",
-  "-n",
-  "--namespace",
-  "--profile",
-  "--profile-output",
-  "--request-timeout",
-  "--server",
-  "--token",
-  "--user",
-  "--vmodule",
 ]);
 const CONTAINER_OPTIONS_WITH_VALUE = new Set([
   "--config",
@@ -222,54 +192,45 @@ const SUDO_OPTIONS_WITH_VALUE = new Set([
   "--user",
 ]);
 const NON_EXECUTING_INFO_FLAGS = new Set(["--help", "--version"]);
-const PACKAGE_INFO_FLAGS = new Set(["-h", "-v", "-V"]);
-const FOLLOW_FLAGS = new Set(["-f", "--follow"]);
-const WATCH_FLAGS = new Set([
-  "--watch",
-  "--watchall",
-  "--watch-all",
-  "--watchfiles",
-  "--reload",
-]);
 const DETACH_FLAGS = new Set(["-d", "--detach"]);
 const COMPOSE_WAIT_FLAGS = new Set(["--wait"]);
-const SUSPICIOUS_SCRIPT_NAME =
-  /(^|[-_.])(dev|serve|server|start|watch|tail|logs?|port[-_]?forward|preview)([-_.]|$)/i;
 
-interface ManagedCommandDecision {
-  kind: "background" | "long_running";
+interface BackgroundCommandDecision {
   suggestedName: string;
 }
 
-export function analyzeManagedCommand(
+/**
+ * Detect commands that keep running outside the shell that started them, either
+ * through shell backgrounding or through a daemonizing mode of the program.
+ */
+export function analyzeBackgroundCommand(
   command: string,
-): ManagedCommandDecision | undefined {
-  return analyzeManagedCommandAtDepth(command, 0);
+): BackgroundCommandDecision | undefined {
+  return analyzeBackgroundCommandAtDepth(command, 0);
 }
 
-function analyzeManagedCommandAtDepth(
+function analyzeBackgroundCommandAtDepth(
   command: string,
   depth: number,
-): ManagedCommandDecision | undefined {
+): BackgroundCommandDecision | undefined {
   if (depth > 8) return undefined;
 
   try {
     const program = parseShell(command);
-    return analyzeManagedProgram(program, command, depth);
+    return analyzeBackgroundProgram(program, command, depth);
   } catch {
-    return analyzeManagedCommandFallback(command);
+    return analyzeBackgroundCommandFallback(command);
   }
 }
 
-function analyzeManagedProgram(
+function analyzeBackgroundProgram(
   ast: ShellProgram,
   source: string,
   depth: number,
   inheritedFunctions = new Map<string, ShellProgram>(),
-): ManagedCommandDecision | undefined {
+): BackgroundCommandDecision | undefined {
   if (hasBackgroundStatement(ast)) {
     return {
-      kind: "background",
       suggestedName: findFirstCommandName(source, ast) ?? "background-process",
     };
   }
@@ -278,14 +239,14 @@ function analyzeManagedProgram(
   for (const [name, body] of collectFunctionDeclarations(ast)) {
     functions.set(name, body);
   }
-  let decision: ManagedCommandDecision | undefined;
+  let decision: BackgroundCommandDecision | undefined;
   walkCommands(ast, (cmd) => {
     const words = commandToWords(cmd).filter(Boolean);
     if (words.length === 0) return false;
 
     const functionBody = functions.get(words[0]);
     if (functionBody && depth < 8) {
-      decision = analyzeManagedProgram(
+      decision = analyzeBackgroundProgram(
         functionBody,
         words[0],
         depth + 1,
@@ -295,7 +256,7 @@ function analyzeManagedProgram(
     if (!decision) {
       const stdinCommand = getShellStdinCommand(cmd, words);
       if (stdinCommand) {
-        decision = analyzeManagedCommandAtDepth(stdinCommand, depth + 1);
+        decision = analyzeBackgroundCommandAtDepth(stdinCommand, depth + 1);
       }
     }
     if (!decision) decision = classifyCommandWords(words, depth);
@@ -305,7 +266,7 @@ function analyzeManagedProgram(
   if (!decision) {
     walkEmbeddedShellText(ast, (text) => {
       if (!hasUnescapedCommandSubstitution(text)) return false;
-      decision = analyzeManagedCommandAtDepth(text, depth + 1);
+      decision = analyzeBackgroundCommandAtDepth(text, depth + 1);
       return decision !== undefined;
     });
   }
@@ -353,6 +314,11 @@ function getShellStdinCommand(
         (redirect?.target ? wordToString(redirect.target) : undefined));
 }
 
+/**
+ * Detect commands that return immediately but leave work running elsewhere.
+ * Such a command finishes instantly under supervision, so the process tool
+ * would report it as done while the real work keeps going.
+ */
 export function hasDetachedExecution(command: string): boolean {
   return hasDetachedExecutionAtDepth(command, 0);
 }
@@ -407,25 +373,20 @@ export function setupBackgroundBlocker(pi: ExtensionAPI): void {
     if (event.toolName !== "bash") return;
 
     const command = String(event.input.command ?? "");
-    const decision = analyzeManagedCommand(command);
+    const decision = analyzeBackgroundCommand(command);
 
     if (!decision) return;
 
-    const isBackground = decision.kind === "background";
-    ctx.ui?.notify(
-      isBackground
-        ? "Blocked background command. Use process instead."
-        : "Blocked long-running command. Use process instead.",
-      "warning",
-    );
+    ctx.ui?.notify("Blocked detached command. Use process instead.", "warning");
 
-    const example = `process({ action: "start", name: "${decision.suggestedName}", command: ${JSON.stringify(command)} })`;
+    const bareCommand = command.replace(BACKGROUND_PATTERN, "").trim();
+    const example = `process({ action: "start", name: "${decision.suggestedName}", command: ${JSON.stringify(bareCommand || command)} })`;
 
     return {
       block: true,
-      reason: isBackground
-        ? `This bash command tries to run in the background. Use the process tool instead. Example: ${example}`
-        : `This bash command looks long-running and would block the conversation. Use the process tool instead. Example: ${example}`,
+      reason:
+        "&, nohup, setsid and daemon flags detach this command from the session, so it cannot be supervised, logged, or stopped. " +
+        `The process tool already runs commands in the background for you: ${example}`,
     };
   });
 }
@@ -433,7 +394,7 @@ export function setupBackgroundBlocker(pi: ExtensionAPI): void {
 function classifyCommandWords(
   words: string[],
   depth: number,
-): ManagedCommandDecision | undefined {
+): BackgroundCommandDecision | undefined {
   if (depth > 8) return undefined;
 
   let current = words;
@@ -443,12 +404,12 @@ function classifyCommandWords(
 
     const nestedCommand = getWrapperCommandString(current);
     if (nestedCommand) {
-      return analyzeManagedCommandAtDepth(nestedCommand, depth + 1);
+      return analyzeBackgroundCommandAtDepth(nestedCommand, depth + 1);
     }
 
     const shellCommand = getShellCommand(current);
     if (shellCommand) {
-      return analyzeManagedCommandAtDepth(shellCommand, depth + 1);
+      return analyzeBackgroundCommandAtDepth(shellCommand, depth + 1);
     }
 
     const unwrapped = unwrapCommand(current);
@@ -460,7 +421,7 @@ function classifyCommandWords(
 
 function classifySimpleCommand(
   words: string[],
-): ManagedCommandDecision | undefined {
+): BackgroundCommandDecision | undefined {
   const [rawName, ...rawArgs] = words;
   const name = basename(rawName).toLowerCase();
   const args = rawArgs.map((arg) => arg.toLowerCase());
@@ -469,17 +430,7 @@ function classifySimpleCommand(
     BACKGROUND_CMD_NAMES.has(name) ||
     isDaemonizingCommand(name, args, rawArgs)
   ) {
-    return {
-      kind: "background",
-      suggestedName: suggestProcessName(words),
-    };
-  }
-
-  if (isLongRunningCommand(rawName, rawArgs, name, args)) {
-    return {
-      kind: "long_running",
-      suggestedName: suggestProcessName(words),
-    };
+    return { suggestedName: suggestProcessName(words) };
   }
 
   return undefined;
@@ -541,111 +492,6 @@ function hasDetachFlag(args: string[]): boolean {
   return hasFlag(args, DETACH_FLAGS);
 }
 
-function isLongRunningCommand(
-  rawName: string,
-  rawArgs: string[],
-  name: string,
-  args: string[],
-): boolean {
-  if (PACKAGE_EXECUTORS.has(name)) {
-    if (hasNonExecutingInfoFlag(rawArgs, true)) return false;
-    const executable = getExecutableAfterOptions(rawArgs, 0);
-    if (!executable) return false;
-    const execName = basename(executable.name).toLowerCase();
-    return isLongRunningCommand(
-      executable.name,
-      executable.args,
-      execName,
-      executable.args.map((arg) => arg.toLowerCase()),
-    );
-  }
-
-  if (PACKAGE_MANAGERS.has(name)) {
-    if (hasNonExecutingInfoFlag(rawArgs, true)) return false;
-    const invocationArgs = stripPackageManagerOptions(rawArgs);
-    const normalizedInvocation = invocationArgs.map((arg) => arg.toLowerCase());
-    const scriptName = getPackageManagerScript(normalizedInvocation);
-    if (
-      (scriptName !== undefined && LONG_RUNNING_SCRIPT_NAMES.has(scriptName)) ||
-      hasAnyArg(args, WATCH_FLAGS)
-    ) {
-      return true;
-    }
-
-    if (
-      normalizedInvocation[0] === "exec" ||
-      normalizedInvocation[0] === "dlx"
-    ) {
-      const executable = getPackageExecutable(invocationArgs);
-      if (!executable) return false;
-      const execName = basename(executable.name).toLowerCase();
-      return isLongRunningCommand(
-        executable.name,
-        executable.args,
-        execName,
-        executable.args.map((arg) => arg.toLowerCase()),
-      );
-    }
-
-    return false;
-  }
-
-  if (DIRECT_LONG_RUNNING_COMMANDS.has(name)) return true;
-
-  if (name === "next") return args[0] === "dev" || args[0] === "start";
-  if (name === "astro") return args[0] === "dev" || args[0] === "preview";
-  if (name === "webpack") return args.includes("serve");
-  if (name === "cargo") return args[0] === "watch";
-  if (name === "tail" || name === "journalctl") {
-    return hasFlag(args, FOLLOW_FLAGS);
-  }
-  if (name === "kubectl") {
-    const invocation = stripLeadingOptions(rawArgs, KUBECTL_OPTIONS_WITH_VALUE);
-    const normalized = invocation.map((arg) => arg.toLowerCase());
-    return (
-      normalized[0] === "port-forward" ||
-      (normalized[0] === "logs" && hasFlag(normalized, FOLLOW_FLAGS))
-    );
-  }
-  if (name === "docker-compose") {
-    return args.includes("up") && !hasFlag(args, DETACH_FLAGS);
-  }
-  if (name === "docker") {
-    const invocation = stripLeadingOptions(args, CONTAINER_OPTIONS_WITH_VALUE);
-    return (
-      invocation[0] === "compose" &&
-      invocation.includes("up") &&
-      !hasFlag(invocation, DETACH_FLAGS)
-    );
-  }
-  if (name === "ssh") return sshStartsPersistentSession(rawArgs);
-  if (name === "python" || name === "python3") {
-    return args[0] === "-m" && args[1] === "http.server";
-  }
-  if (name === "vitest" || name === "jest") {
-    return hasAnyArg(args, WATCH_FLAGS);
-  }
-  if (name === "rails") return args[0] === "server" || args[0] === "s";
-
-  return (
-    looksLikeSuspiciousScript(rawName) ||
-    (SHELL_LAUNCHERS.has(name) && looksLikeSuspiciousScript(args[0]))
-  );
-}
-
-function getPackageManagerScript(args: string[]): string | undefined {
-  if (args.length === 0) return undefined;
-  if (
-    args[0] === "run" ||
-    args[0] === "run-script" ||
-    args[0] === "exec" ||
-    args[0] === "dlx"
-  ) {
-    return args[1];
-  }
-  return args[0];
-}
-
 function stripPackageManagerOptions(args: string[]): string[] {
   let index = 0;
   while (index < args.length) {
@@ -659,16 +505,6 @@ function stripPackageManagerOptions(args: string[]): string[] {
     index += consumesValue ? 2 : 1;
   }
   return args.slice(index);
-}
-
-function getPackageExecutable(
-  invocation: string[],
-): { name: string; args: string[] } | undefined {
-  return getExecutableAfterOptions(
-    invocation,
-    1,
-    PACKAGE_EXEC_OPTIONS_WITH_VALUE,
-  );
 }
 
 function getExecutableAfterOptions(
@@ -861,37 +697,6 @@ function sshForksToBackground(args: string[]): boolean {
   return false;
 }
 
-function sshStartsPersistentSession(args: string[]): boolean {
-  let index = 0;
-  let noRemoteCommand = false;
-  let nonExecutingMode = false;
-
-  while (index < args.length && args[index].startsWith("-")) {
-    const arg = args[index];
-    if (arg === "--") {
-      index++;
-      break;
-    }
-    const valueOption = findSshValueOption(arg);
-    const flags = arg.slice(1, valueOption?.index ?? arg.length);
-    if (flags.includes("N")) noRemoteCommand = true;
-    if (
-      valueOption?.option === "-O" ||
-      valueOption?.option === "-Q" ||
-      /[GQV]/.test(flags)
-    ) {
-      nonExecutingMode = true;
-    }
-
-    const consumesNext = valueOption?.index === arg.length - 1;
-    index += consumesNext ? 2 : 1;
-  }
-
-  if (nonExecutingMode || index >= args.length) return false;
-  if (noRemoteCommand) return true;
-  return index === args.length - 1;
-}
-
 function findSshValueOption(
   argument: string,
 ): { option: string; index: number } | undefined {
@@ -917,18 +722,10 @@ function stripLeadingOptions(
   return args.slice(index);
 }
 
-function hasNonExecutingInfoFlag(
-  args: string[],
-  includePackageShortFlags = false,
-): boolean {
+function hasNonExecutingInfoFlag(args: string[]): boolean {
   for (const arg of args) {
     if (arg === "--" || !arg.startsWith("-")) return false;
-    if (
-      NON_EXECUTING_INFO_FLAGS.has(arg) ||
-      (includePackageShortFlags && PACKAGE_INFO_FLAGS.has(arg))
-    ) {
-      return true;
-    }
+    if (NON_EXECUTING_INFO_FLAGS.has(arg)) return true;
   }
   return false;
 }
@@ -957,35 +754,8 @@ function hasFlag(args: string[], values: Set<string>): boolean {
   return false;
 }
 
-function hasAnyArg(args: string[], values: Set<string>): boolean {
-  return args.some((arg) => values.has(arg));
-}
-
 function suggestProcessName(words: string[]): string {
-  const [rawName, ...rawArgs] = words;
-  const name = basename(rawName).toLowerCase();
-  const args = rawArgs.map((arg) => arg.toLowerCase());
-
-  if (PACKAGE_MANAGERS.has(name)) {
-    const invocation = stripPackageManagerOptions(rawArgs);
-    const normalized = invocation.map((arg) => arg.toLowerCase());
-    if (normalized[0] === "exec" || normalized[0] === "dlx") {
-      const executable = getPackageExecutable(invocation);
-      if (executable) return sanitizeProcessName(executable.name);
-    }
-    const scriptName = getPackageManagerScript(normalized);
-    if (scriptName) return sanitizeProcessName(scriptName);
-  }
-
-  if (name === "docker" || name === "docker-compose") return "compose";
-  if (name === "kubectl" && args[0] === "port-forward") return "port-forward";
-  if (name === "tail" || name === "journalctl") return "logs";
-  if (SHELL_LAUNCHERS.has(name) && rawArgs[0]) {
-    const scriptName = sanitizeProcessName(rawArgs[0]);
-    if (scriptName !== "process") return scriptName;
-  }
-
-  return sanitizeProcessName(rawName);
+  return sanitizeProcessName(words[0]);
 }
 
 function sanitizeProcessName(value: string): string {
@@ -997,37 +767,12 @@ function sanitizeProcessName(value: string): string {
   return cleaned || "process";
 }
 
-function looksLikeSuspiciousScript(value: string | undefined): boolean {
-  if (!value) return false;
-  return SUSPICIOUS_SCRIPT_NAME.test(basename(value));
-}
-
-function analyzeManagedCommandFallback(
+function analyzeBackgroundCommandFallback(
   command: string,
-): ManagedCommandDecision | undefined {
-  if (BACKGROUND_PATTERN.test(command)) {
-    return {
-      kind: "background",
-      suggestedName: "background-process",
-    };
-  }
-
-  const lower = command.toLowerCase();
-  if (
-    /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|preview|watch)\b/.test(
-      lower,
-    ) ||
-    /\bdocker(?:-compose|\s+compose)\s+up\b/.test(lower) ||
-    /\bkubectl\s+port-forward\b/.test(lower) ||
-    /\b(?:tail|journalctl)\b.*(?:\s-f\b|\s-F\b|--follow\b)/.test(lower)
-  ) {
-    return {
-      kind: "long_running",
-      suggestedName: "process",
-    };
-  }
-
-  return undefined;
+): BackgroundCommandDecision | undefined {
+  return BACKGROUND_PATTERN.test(command)
+    ? { suggestedName: "background-process" }
+    : undefined;
 }
 
 function findFirstCommandName(

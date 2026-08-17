@@ -20,7 +20,7 @@ vi.mock("./utils", () => ({
   killProcessGroup: mocks.killProcessGroup,
 }));
 
-import type { ManagerEvent } from "./constants";
+import type { ManagerEvent, ProcessInfo } from "./constants";
 import { ProcessManager } from "./manager";
 
 class FakeReadable extends EventEmitter {
@@ -649,8 +649,11 @@ describe("ProcessManager", () => {
     expect(mocks.killProcessGroup).toHaveBeenCalledTimes(2);
   });
 
-  it("resolves only exact ids or exact names and reports ambiguity", () => {
-    const first = manager.start("server", "pnpm dev", process.cwd());
+  it("resolves only exact ids or exact names and reports ambiguity", async () => {
+    manager.start("server", "pnpm dev", process.cwd());
+    children[0].emit("close", 0, null);
+    await manager.getOutput("proc_1");
+    const first = manager.get("proc_1") as ProcessInfo;
     manager.start("server", "pnpm test --watch", process.cwd());
 
     expect(manager.resolve(first.id)).toEqual({ ok: true, info: first });
@@ -662,5 +665,166 @@ describe("ProcessManager", () => {
       ok: false,
       reason: "not_found",
     });
+  });
+
+  it("refuses a second live process with the same name", () => {
+    manager.start("server", "pnpm dev", process.cwd());
+
+    expect(() => manager.start("Server", "pnpm dev", process.cwd())).toThrow(
+      /already named "Server" \(proc_1\)/,
+    );
+    expect(manager.list()).toHaveLength(1);
+  });
+
+  it("returns only output the agent has not read yet", async () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    children[0].stdout.emit("data", Buffer.from("first\nsecond\n"));
+
+    const initial = await manager.readAgentOutput(proc.id, 100);
+    expect(initial).toMatchObject({
+      stdout: ["first", "second"],
+      firstRead: true,
+      hasNewOutput: true,
+      newStdoutLines: 2,
+    });
+
+    const unchanged = await manager.readAgentOutput(proc.id, 100);
+    expect(unchanged).toMatchObject({
+      stdout: [],
+      stderr: [],
+      hasNewOutput: false,
+      emptyReads: 1,
+    });
+    expect(unchanged?.previousReadAt).not.toBeNull();
+
+    children[0].stderr.emit("data", Buffer.from("boom\n"));
+    const afterWrite = await manager.readAgentOutput(proc.id, 100);
+    expect(afterWrite).toMatchObject({
+      stdout: [],
+      stderr: ["boom"],
+      hasNewOutput: true,
+      emptyReads: 0,
+    });
+  });
+
+  it("counts a trailing line without a newline as output", async () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    children[0].stdout.emit("data", Buffer.from("waiting for input"));
+
+    expect(await manager.readAgentOutput(proc.id, 100)).toMatchObject({
+      stdout: ["waiting for input"],
+      hasNewOutput: true,
+    });
+    expect(await manager.readAgentOutput(proc.id, 100)).toMatchObject({
+      hasNewOutput: false,
+    });
+  });
+
+  it("waits for a process to exit", async () => {
+    const proc = manager.start("tests", "pnpm test", process.cwd());
+
+    const pending = manager.waitFor(proc.id, {
+      until: "exit",
+      timeoutMs: 5000,
+    });
+    children[0].emit("close", 0, null);
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(await pending).toMatchObject({
+      reason: "exited",
+      info: { status: "exited", exitCode: 0 },
+    });
+  });
+
+  it("returns immediately for a process that already finished", async () => {
+    const proc = manager.start("tests", "pnpm test", process.cwd());
+    children[0].emit("close", 0, null);
+    await manager.getOutput(proc.id);
+
+    expect(
+      await manager.waitFor(proc.id, { until: "exit", timeoutMs: 5000 }),
+    ).toMatchObject({ reason: "exited" });
+  });
+
+  it("reports a timeout while the process keeps running", async () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    mocks.isProcessGroupAlive.mockReturnValue(true);
+
+    const pending = manager.waitFor(proc.id, {
+      until: "exit",
+      timeoutMs: 1000,
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(await pending).toMatchObject({
+      reason: "timeout",
+      info: { status: "running" },
+    });
+  });
+
+  it("matches output printed before and after the wait starts", async () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    children[0].stdout.emit("data", Buffer.from("Listening on :3000\n"));
+    await manager.getOutput(proc.id);
+
+    expect(
+      await manager.waitFor(proc.id, {
+        until: "output",
+        pattern: "listening on",
+        timeoutMs: 5000,
+      }),
+    ).toMatchObject({ reason: "matched", stream: "stdout" });
+
+    const later = manager.waitFor(proc.id, {
+      until: "output",
+      pattern: "compiled",
+      timeoutMs: 5000,
+    });
+    await vi.advanceTimersByTimeAsync(200);
+    children[0].stderr.emit("data", Buffer.from("compiled with warnings\n"));
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(await later).toMatchObject({
+      reason: "matched",
+      stream: "stderr",
+      line: "compiled with warnings",
+    });
+  });
+
+  it("stops waiting for output when the process ends first", async () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+
+    const pending = manager.waitFor(proc.id, {
+      until: "output",
+      pattern: "listening on",
+      timeoutMs: 5000,
+    });
+    await vi.advanceTimersByTimeAsync(200);
+    children[0].emit("close", 1, null);
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(await pending).toMatchObject({ reason: "exited" });
+  });
+
+  it("stops waiting when the caller aborts", async () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    mocks.isProcessGroupAlive.mockReturnValue(true);
+    const controller = new AbortController();
+
+    const pending = manager.waitFor(proc.id, {
+      until: "exit",
+      timeoutMs: 60_000,
+      abortSignal: controller.signal,
+    });
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(await pending).toMatchObject({ reason: "cancelled" });
+  });
+
+  it("reports an unknown process instead of waiting forever", async () => {
+    expect(
+      await manager.waitFor("proc_404", { until: "exit", timeoutMs: 1000 }),
+    ).toBeNull();
   });
 });
