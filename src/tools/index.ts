@@ -17,22 +17,26 @@ import {
   truncateCmd,
 } from "../utils";
 import { executeAction } from "./actions";
+import { DEFAULT_WAIT_SECONDS, MAX_WAIT_SECONDS } from "./actions/wait";
+import { PROMPT_GUIDELINES } from "./guidelines";
 import { ToolBody, ToolCallHeader, ToolFooter } from "./tool-rendering";
 
 const PROCESS_ACTIONS = [
   "start",
+  "wait",
   "list",
   "output",
   "logs",
   "kill",
   "clear",
 ] as const;
+const WAIT_UNTIL = ["exit", "output"] as const;
 
 const ProcessesParams = Type.Object(
   {
     action: StringEnum(PROCESS_ACTIONS, {
       description:
-        "Action: start (run command), list (show all), output (get recent output), logs (get log file paths), kill (terminate or force-kill), clear (remove finished)",
+        "Action: start (run command), wait (block until exit, matching output, or timeout), list (show all), output (get output not seen yet), logs (get log file paths), kill (terminate or force-kill), clear (remove finished)",
     }),
     command: Type.Optional(
       Type.String({
@@ -52,7 +56,7 @@ const ProcessesParams = Type.Object(
     id: Type.Optional(
       Type.String({
         description:
-          "Exact process ID or exact friendly name to match (required for output/kill/logs).",
+          "Exact process ID or exact friendly name to match (required for wait/output/kill/logs).",
         minLength: 1,
         maxLength: 120,
       }),
@@ -63,10 +67,25 @@ const ProcessesParams = Type.Object(
           "Force-kill the process with SIGKILL for kill action. Use after a normal terminate times out, or when you need an immediate hard stop.",
       }),
     ),
-    continueAfterStart: Type.Optional(
-      Type.Boolean({
+    until: Type.Optional(
+      StringEnum(WAIT_UNTIL, {
         description:
-          "For start only. Leave unset/false when the next step is to wait for process completion; process start will end this agent turn and the extension will resume you on exit. Set true only when you have immediate, specific, non-polling work to do after starting.",
+          "For wait only. 'exit' (default) blocks until the process ends; 'output' blocks until its output contains 'pattern'.",
+      }),
+    ),
+    pattern: Type.Optional(
+      Type.String({
+        description:
+          "For wait with until='output'. Text to look for in the output, matched as a case-insensitive substring (e.g. 'listening on').",
+        minLength: 1,
+        maxLength: 200,
+      }),
+    ),
+    timeoutSeconds: Type.Optional(
+      Type.Number({
+        description: `For wait only. How long to block before giving up (default ${DEFAULT_WAIT_SECONDS}, max ${MAX_WAIT_SECONDS}). A timeout is a normal result, not an error.`,
+        minimum: 1,
+        maximum: MAX_WAIT_SECONDS,
       }),
     ),
   },
@@ -75,10 +94,18 @@ const ProcessesParams = Type.Object(
 
 type ProcessesParamsType = Static<typeof ProcessesParams>;
 type ProcessAction = (typeof PROCESS_ACTIONS)[number];
-type OptionalParam = "command" | "name" | "id" | "force" | "continueAfterStart";
+type OptionalParam =
+  | "command"
+  | "name"
+  | "id"
+  | "force"
+  | "until"
+  | "pattern"
+  | "timeoutSeconds";
 
 const ALLOWED_PARAMS: Record<ProcessAction, ReadonlySet<OptionalParam>> = {
-  start: new Set(["command", "name", "continueAfterStart"]),
+  start: new Set(["command", "name"]),
+  wait: new Set(["id", "until", "pattern", "timeoutSeconds"]),
   list: new Set(),
   output: new Set(["id"]),
   logs: new Set(["id"]),
@@ -90,7 +117,9 @@ const OPTIONAL_PARAMS: OptionalParam[] = [
   "name",
   "id",
   "force",
-  "continueAfterStart",
+  "until",
+  "pattern",
+  "timeoutSeconds",
 ];
 
 function validateParams(params: ProcessesParamsType): void {
@@ -119,21 +148,40 @@ function validateParams(params: ProcessesParamsType): void {
   validateOptionalText(params.name, "name", 120);
   validateOptionalText(params.command, "command", 20_000);
   validateOptionalText(params.id, "id", 120);
+  validateOptionalText(params.pattern, "pattern", 200);
   if (params.force !== undefined && typeof params.force !== "boolean") {
     throw new Error('Parameter "force" must be a boolean');
   }
-  if (
-    params.continueAfterStart !== undefined &&
-    typeof params.continueAfterStart !== "boolean"
-  ) {
-    throw new Error('Parameter "continueAfterStart" must be a boolean');
+  if (params.until !== undefined && !WAIT_UNTIL.includes(params.until)) {
+    throw new Error('Parameter "until" must be "exit" or "output"');
+  }
+  if (params.timeoutSeconds !== undefined) {
+    const seconds = params.timeoutSeconds;
+    if (
+      typeof seconds !== "number" ||
+      !Number.isInteger(seconds) ||
+      seconds < 1 ||
+      seconds > MAX_WAIT_SECONDS
+    ) {
+      throw new Error(
+        `Parameter "timeoutSeconds" must be a whole number of seconds between 1 and ${MAX_WAIT_SECONDS}`,
+      );
+    }
   }
 
   if (params.action === "start") {
     requireText(params.name, "name");
     requireText(params.command, "command");
   }
+  if (params.action === "wait") {
+    if (params.until === "output") {
+      requireText(params.pattern, "pattern");
+    } else if (params.pattern !== undefined) {
+      throw new Error('Parameter "pattern" requires until="output"');
+    }
+  }
   if (
+    params.action === "wait" ||
     params.action === "output" ||
     params.action === "logs" ||
     params.action === "kill"
@@ -172,32 +220,34 @@ export function setupProcessesTools(pi: ExtensionAPI, manager: ProcessManager) {
   pi.registerTool<typeof ProcessesParams, ProcessesDetails>({
     name: "process",
     label: "Process",
-    description: `Manage background processes.
+    description: `Run commands as supervised background processes instead of waiting for them in bash.
 
-Actions: start, list, output, logs, kill, clear.
-- start requires 'name' and 'command'
-- output/logs/kill require 'id' (exact process ID or exact friendly name)
-- kill supports optional 'force=true' for SIGKILL
-- start supports optional 'continueAfterStart=true' only when there is immediate non-polling work to do
+Use 'start' whenever you do not want to sit and wait for a command:
+- work that runs until you stop it - servers, watchers, log tails, tunnels, port-forwards
+- work slow enough to block you - builds, full test runs, installs, migrations, benchmarks
+If you are unsure how long a command takes, start it as a process; that is always safe.
+Keep bash for commands that finish in seconds and whose output you need right now.
 
-Important behavior:
-- By default, 'start' ends the current agent turn. If the next step is waiting, call 'start' by itself and wait for the automatic process-end notification instead of calling 'list', 'output', or 'logs' repeatedly.
-- Set 'continueAfterStart=true' only when you have specific useful work to do immediately after starting the process; do not use it to poll.
-- This tool is event-driven: the agent is notified automatically when a process exits, fails, or is externally killed.
-- Tool-triggered kills never notify.
-- Use 'output' or 'logs' only on demand: when the user asks, when you need a one-off diagnostic snapshot, or when investigating a problem.
+Waiting is an action, not a loop. 'wait' blocks until the process exits, until its output
+matches a pattern, or until a timeout, and costs one call however long it takes. Never call
+'list' or 'output' repeatedly to find out whether something is finished or ready. If a
+process ends while you are doing other work, you are notified automatically.
 
-Preferred pattern: start the process once, let the turn stop, and resume from the automatic notification instead of polling.`,
+Actions:
+- start: 'name' + 'command'. Runs in the foreground under supervision - never detach it
+  yourself with &, nohup, setsid or -d, or it cannot be supervised, logged, or stopped.
+- wait: 'id' + 'until' ("exit", or "output" with 'pattern') + optional 'timeoutSeconds'.
+  A timeout is a normal result: wait again, or look at the output.
+- output: what the process printed since your last look. For reading output, not for polling.
+- logs: paths to the full logs; read them with the read tool when the tail is not enough.
+- list: what is running. kill: stop one ('force=true' for SIGKILL). clear: drop finished records.
+
+Processes stop when the session ends.`,
     promptSnippet:
-      "Start and manage background processes without blocking the conversation; process start waits for notifications by default",
+      "Run and supervise long-running or blocking commands - servers, watchers, builds, test runs - without blocking the conversation",
     executionMode: "sequential",
 
-    promptGuidelines: [
-      "Use the process tool instead of bash for dev servers, watch mode, log tails, port-forwards, or commands that should keep running.",
-      "After process start, do not call process list/output/logs just to wait. If the next step is waiting, call process start by itself; by default it ends the turn and the extension will resume the agent when the process exits.",
-      "Set process continueAfterStart=true only when there is immediate, specific, non-polling work to do after start.",
-      "Use process output or process logs only for a one-off inspection, explicit user request, or debugging.",
-    ],
+    promptGuidelines: PROMPT_GUIDELINES,
 
     parameters: ProcessesParams,
 
@@ -235,7 +285,8 @@ Preferred pattern: start the process once, let the turn stop, and resume from th
       if (
         (args.action === "output" ||
           args.action === "kill" ||
-          args.action === "logs") &&
+          args.action === "logs" ||
+          args.action === "wait") &&
         args.id
       ) {
         mainArg = args.id;
@@ -245,8 +296,17 @@ Preferred pattern: start the process once, let the turn stop, and resume from th
         optionArgs.push({ label: "force", value: "true" });
       }
 
-      if (args.action === "start" && args.continueAfterStart) {
-        optionArgs.push({ label: "continueAfterStart", value: "true" });
+      if (args.action === "wait") {
+        optionArgs.push({ label: "until", value: args.until ?? "exit" });
+        if (args.pattern) {
+          optionArgs.push({ label: "pattern", value: args.pattern });
+        }
+        if (args.timeoutSeconds !== undefined) {
+          optionArgs.push({
+            label: "timeout",
+            value: `${args.timeoutSeconds}s`,
+          });
+        }
       }
 
       return new ToolCallHeader(
@@ -306,6 +366,31 @@ Preferred pattern: start the process once, let the turn stop, and resume from th
           value: theme.fg("muted", formatTimestamp(process.startTime)),
           showCollapsed: true,
         });
+      } else if (details.action === "wait" && details.wait) {
+        const wait = details.wait;
+        const tone =
+          wait.reason === "matched"
+            ? "success"
+            : wait.reason === "timeout"
+              ? "warning"
+              : "accent";
+        fields.push({
+          label: "Waited",
+          value: `${theme.fg(tone, wait.reason)} after ${wait.waitedSeconds}s`,
+          showCollapsed: true,
+        });
+        fields.push({
+          label: "Result",
+          value: theme.fg("muted", sanitizeLine(details.message)),
+          showCollapsed: true,
+        });
+        if (wait.line) {
+          fields.push({
+            label: wait.stream ?? "match",
+            value: sanitizeLine(wait.line),
+            showCollapsed: true,
+          });
+        }
       } else if (details.action === "output" && details.output) {
         const lines: string[] = [theme.fg("muted", details.message)];
         let hadAnsi = details.output.hadAnsi ?? false;

@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { ExecuteResult } from "../../constants";
+import type { ExecuteResult, WaitUntil } from "../../constants";
 import type { ProcessManager } from "../../manager";
 import { sanitizeLine } from "../../utils";
 import { executeClear } from "./clear";
@@ -8,6 +8,7 @@ import { executeList } from "./list";
 import { executeLogs } from "./logs";
 import { executeOutput } from "./output";
 import { executeStart } from "./start";
+import { executeWait } from "./wait";
 
 interface ActionParams {
   action: string;
@@ -15,7 +16,9 @@ interface ActionParams {
   name?: string;
   id?: string;
   force?: boolean;
-  continueAfterStart?: boolean;
+  until?: WaitUntil;
+  pattern?: string;
+  timeoutSeconds?: number;
 }
 
 export async function executeAction(
@@ -29,6 +32,8 @@ export async function executeAction(
       return executeStart(params, manager, ctx);
     case "list":
       return executeList(manager);
+    case "wait":
+      return executeWait(params, manager, signal);
     case "output":
       return executeOutput(params, manager);
     case "logs":

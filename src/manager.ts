@@ -4,12 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  type AgentOutputRead,
   type KillResult,
   LIVE_STATUSES,
   type ManagerEvent,
   type ProcessInfo,
   type ProcessStatus,
   type ResolveProcessResult,
+  type WaitOutcome,
+  type WaitUntil,
 } from "./constants";
 import { isProcessAlive, isProcessGroupAlive, killProcessGroup } from "./utils";
 import { spawnCommand } from "./utils/command-executor";
@@ -19,10 +22,26 @@ import {
   readTailLines as readLogTailLines,
 } from "./utils/log-files";
 
+/**
+ * How much of a stream has been written. `lines` counts completed lines, so a
+ * trailing line without a newline is only visible through `partial`.
+ */
+interface StreamProgress {
+  lines: number;
+  partial: boolean;
+}
+
 interface ManagedProcess extends ProcessInfo {
   lastSignalSent: NodeJS.Signals | null;
   combinedFile: string;
   triggerAgentTurnOnEnd: boolean;
+  stdoutProgress: StreamProgress;
+  stderrProgress: StreamProgress;
+  /** Lines already handed to the agent, so later reads only return new output. */
+  agentSeenStdout: number;
+  agentSeenStderr: number;
+  agentReadAt: number | null;
+  agentEmptyReads: number;
   leaderExited: boolean;
   leaderClosed: boolean;
   leaderExitCode: number | null;
@@ -45,6 +64,8 @@ const LOG_FILE_MAX_BYTES = 5 * 1024 * 1024;
 const LOG_FILE_RETAIN_BYTES = 4 * 1024 * 1024;
 const TAIL_READ_MAX_BYTES = 512 * 1024;
 const CHILD_CLOSE_WAIT_MS = 500;
+const WAIT_POLL_MS = 200;
+const WAIT_SCAN_MAX_LINES = 2000;
 const LOG_FILE_OPTIONS = {
   maxBytes: LOG_FILE_MAX_BYTES,
   retainBytes: LOG_FILE_RETAIN_BYTES,
@@ -193,12 +214,22 @@ export class ProcessManager {
         `Process record limit reached (${MAX_RETAINED_PROCESSES}); clear finished processes before starting another`,
       );
     }
-    const liveCount = [...this.processes.values()].filter((process) =>
+    const live = [...this.processes.values()].filter((process) =>
       LIVE_STATUSES.has(process.status),
-    ).length;
-    if (liveCount >= MAX_LIVE_PROCESSES) {
+    );
+    if (live.length >= MAX_LIVE_PROCESSES) {
       throw new Error(
         `Live process limit reached (${MAX_LIVE_PROCESSES}); stop a process before starting another`,
+      );
+    }
+    // Two live processes with one name make every later lookup by name
+    // ambiguous, so the agent would lose the handle it just chose.
+    const nameClash = live.find(
+      (process) => process.name.toLowerCase() === name.toLowerCase(),
+    );
+    if (nameClash) {
+      throw new Error(
+        `A live process is already named "${name}" (${nameClash.id}); stop it first or choose a different name`,
       );
     }
 
@@ -277,6 +308,12 @@ export class ProcessManager {
       lastSignalSent: null,
       combinedFile,
       triggerAgentTurnOnEnd: true,
+      stdoutProgress: { lines: 0, partial: false },
+      stderrProgress: { lines: 0, partial: false },
+      agentSeenStdout: 0,
+      agentSeenStderr: 0,
+      agentReadAt: null,
+      agentEmptyReads: 0,
       leaderExited: false,
       leaderClosed: false,
       leaderExitCode: null,
@@ -297,6 +334,7 @@ export class ProcessManager {
 
     child.stdout?.on("data", (data: Buffer) => {
       if (!trackingStarted) return;
+      recordStreamProgress(managed.stdoutProgress, data);
       child.stdout?.pause();
       void Promise.allSettled([
         stdoutLog.append(data),
@@ -316,6 +354,7 @@ export class ProcessManager {
 
     child.stderr?.on("data", (data: Buffer) => {
       if (!trackingStarted) return;
+      recordStreamProgress(managed.stderrProgress, data);
       child.stderr?.pause();
       void Promise.allSettled([
         stderrLog.append(data),
@@ -364,6 +403,7 @@ export class ProcessManager {
     child.on("error", (err) => {
       if (!trackingStarted) return;
       const message = `Process error: ${err.message}\n`;
+      recordStreamProgress(managed.stderrProgress, Buffer.from(message));
       void Promise.allSettled([
         stderrLog.append(message),
         combinedLog.write("stderr", Buffer.from(message)),
@@ -452,6 +492,178 @@ export class ProcessManager {
       stderr,
       status: managed.status,
     };
+  }
+
+  /**
+   * Read the output the agent has not seen yet and advance its read position.
+   * Returns empty streams when nothing was written since the previous read, so
+   * callers can say "nothing new" instead of resending known lines.
+   */
+  async readAgentOutput(
+    id: string,
+    maxLines: number,
+  ): Promise<AgentOutputRead | null> {
+    const managed = this.processes.get(id);
+    if (!managed) return null;
+
+    try {
+      await managed.flushLogs();
+    } catch {
+      managed.logError = true;
+      return null;
+    }
+    if (managed.logError) return null;
+
+    const stdoutTotal = writtenLines(managed.stdoutProgress);
+    const stderrTotal = writtenLines(managed.stderrProgress);
+    const firstRead = managed.agentReadAt === null;
+    const newStdoutLines = Math.max(0, stdoutTotal - managed.agentSeenStdout);
+    const newStderrLines = Math.max(0, stderrTotal - managed.agentSeenStderr);
+
+    const stdout = this.readTailLines(
+      managed.stdoutFile,
+      Math.min(newStdoutLines, maxLines),
+    );
+    const stderr = this.readTailLines(
+      managed.stderrFile,
+      Math.min(newStderrLines, maxLines),
+    );
+    if (!stdout || !stderr) {
+      managed.logError = true;
+      return null;
+    }
+
+    const previousReadAt = managed.agentReadAt;
+    const hasNewOutput = stdout.length > 0 || stderr.length > 0;
+    managed.agentSeenStdout = stdoutTotal;
+    managed.agentSeenStderr = stderrTotal;
+    managed.agentReadAt = Date.now();
+    managed.agentEmptyReads = hasNewOutput ? 0 : managed.agentEmptyReads + 1;
+
+    return {
+      stdout,
+      stderr,
+      status: managed.status,
+      firstRead,
+      hasNewOutput,
+      newStdoutLines,
+      newStderrLines,
+      previousReadAt,
+      emptyReads: managed.agentEmptyReads,
+    };
+  }
+
+  /**
+   * Block until the process ends, until its output contains `pattern`, or until
+   * the timeout elapses. Output matching starts at the beginning of the retained
+   * log, so a line printed between start and this call is still found.
+   */
+  async waitFor(
+    id: string,
+    opts: {
+      until: WaitUntil;
+      pattern?: string;
+      timeoutMs: number;
+      abortSignal?: AbortSignal;
+    },
+  ): Promise<WaitOutcome | null> {
+    const managed = this.processes.get(id);
+    if (!managed) return null;
+
+    const deadline = Date.now() + opts.timeoutMs;
+    const info = () => this.toProcessInfo(managed);
+
+    if (opts.until === "exit") {
+      if (!LIVE_STATUSES.has(managed.status)) {
+        return { reason: "exited", info: info() };
+      }
+      if (opts.abortSignal?.aborted) {
+        return { reason: "cancelled", info: info() };
+      }
+
+      const result = await this.waitForGracePeriod(
+        managed,
+        opts.timeoutMs,
+        opts.abortSignal,
+      );
+      if (result === "aborted") return { reason: "cancelled", info: info() };
+      return LIVE_STATUSES.has(managed.status)
+        ? { reason: "timeout", info: info() }
+        : { reason: "exited", info: info() };
+    }
+
+    const pattern = opts.pattern ?? "";
+    const scanned = { stdout: 0, stderr: 0 };
+    for (;;) {
+      const match = await this.scanForPattern(managed, scanned, pattern);
+      if (match === null) return null;
+      if (match) {
+        return {
+          reason: "matched",
+          info: info(),
+          line: match.line,
+          stream: match.stream,
+        };
+      }
+      if (!LIVE_STATUSES.has(managed.status)) {
+        return { reason: "exited", info: info() };
+      }
+      if (opts.abortSignal?.aborted) {
+        return { reason: "cancelled", info: info() };
+      }
+
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return { reason: "timeout", info: info() };
+
+      const result = await this.waitForGracePeriod(
+        managed,
+        Math.min(WAIT_POLL_MS, remaining),
+        opts.abortSignal,
+      );
+      if (result === "aborted") return { reason: "cancelled", info: info() };
+    }
+  }
+
+  /**
+   * Test output written since the previous scan. Returns `undefined` when the
+   * pattern was not seen yet and `null` when the logs became unreadable.
+   */
+  private async scanForPattern(
+    managed: ManagedProcess,
+    scanned: { stdout: number; stderr: number },
+    pattern: string,
+  ): Promise<{ line: string; stream: "stdout" | "stderr" } | undefined | null> {
+    try {
+      await managed.flushLogs();
+    } catch {
+      managed.logError = true;
+      return null;
+    }
+
+    const needle = pattern.toLowerCase();
+    for (const stream of ["stdout", "stderr"] as const) {
+      const progress =
+        stream === "stdout" ? managed.stdoutProgress : managed.stderrProgress;
+      const total = writtenLines(progress);
+      if (total <= scanned[stream]) continue;
+
+      const filePath =
+        stream === "stdout" ? managed.stdoutFile : managed.stderrFile;
+      const lines = this.readTailLines(
+        filePath,
+        Math.min(total - scanned[stream], WAIT_SCAN_MAX_LINES),
+      );
+      scanned[stream] = total;
+      if (!lines) {
+        managed.logError = true;
+        return null;
+      }
+
+      const hit = lines.find((line) => line.toLowerCase().includes(needle));
+      if (hit) return { line: hit, stream };
+    }
+
+    return undefined;
   }
 
   async getCombinedOutput(
@@ -837,4 +1049,17 @@ export class ProcessManager {
       stderrFile: managed.stderrFile,
     };
   }
+}
+
+function recordStreamProgress(progress: StreamProgress, data: Buffer): void {
+  if (data.length === 0) return;
+  for (const byte of data) {
+    if (byte === 0x0a) progress.lines++;
+  }
+  progress.partial = data[data.length - 1] !== 0x0a;
+}
+
+/** Lines a reader would see, including a trailing line without a newline. */
+function writtenLines(progress: StreamProgress): number {
+  return progress.lines + (progress.partial ? 1 : 0);
 }

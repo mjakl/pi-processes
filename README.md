@@ -10,12 +10,14 @@ Coding agents often need to start dev servers, watch-mode tests, log tails, port
 
 ### Features
 
-- **Agent-facing process tool** — the agent can start, inspect, kill, and clear managed processes.
+- **Agent-facing process tool** — the agent can start, wait for, inspect, kill, and clear managed processes.
+- **Blocking wait** — the agent waits for an exit, for a line of output, or for a timeout in a single call instead of checking repeatedly.
+- **Incremental output** — `process output` returns only what was printed since the agent last looked.
 - **Event-driven completion** — the agent is notified when a managed process exits, fails, or is externally killed.
 - **`/ps` overlay** — users can monitor processes and logs without asking the agent to poll.
 - **Status line** — a compact process status appears while managed processes exist.
 - **File-backed logs** — recent process output is retained outside the agent context window.
-- **Background-command interception** — optional guardrails steer long-running shell commands toward the `process` tool.
+- **Detached-command interception** — commands that escape the session are blocked and routed to the `process` tool, and unbounded bash calls get a timeout so a long command cannot hang the agent.
 
 ### Install
 
@@ -91,7 +93,8 @@ Example:
     "shellPath": "/absolute/path/to/bash"
   },
   "interception": {
-    "blockBackgroundCommands": true
+    "blockBackgroundCommands": true,
+    "bashTimeoutSeconds": 300
   }
 }
 ```
@@ -101,7 +104,8 @@ Options:
 - `output.defaultTailLines` — default number of lines returned by `process output` (positive integer, capped by `maxOutputLines`).
 - `output.maxOutputLines` — hard cap for `process output` (positive integer, at most 2,000).
 - `execution.shellPath` — absolute shell path override used for process startup.
-- `interception.blockBackgroundCommands` — block shell backgrounding and obvious long-running foreground commands such as `pnpm dev`, `docker compose up`, `tail -f`, or `kubectl port-forward`, and guide the agent to use the `process` tool instead.
+- `interception.blockBackgroundCommands` — block bash commands that detach from the session (`&`, `setsid`, `disown`, `gunicorn --daemon`, `ssh -f`, …) and guide the agent to the `process` tool instead.
+- `interception.bashTimeoutSeconds` — timeout applied to bash calls that set none, so a command that turns out to be long-running cannot hang the agent. A timeout tells the agent to restart the work as a process. Set `0` to disable, at most 3,600.
 
 ---
 
@@ -116,8 +120,9 @@ The tool is named `process`.
 Actions:
 
 - `start` — start a managed process.
+- `wait` — block until the process exits, until its output matches a pattern, or until a timeout.
 - `list` — list managed processes.
-- `output` — return a one-off tailed stdout/stderr snapshot.
+- `output` — return the output printed since the agent last looked.
 - `logs` — return file paths for stdout, stderr, and combined logs.
 - `kill` — terminate or force-kill a process.
 - `clear` — remove finished processes from the manager.
@@ -127,7 +132,8 @@ Tool-call examples:
 ```text
 process start "pnpm dev" name="backend-dev"
 process start "pnpm test --watch" name="tests"
-process start "pnpm dev" name="backend-dev" continueAfterStart=true
+process wait id="backend-dev" until="output" pattern="listening on" timeoutSeconds=30
+process wait id="tests"
 process list
 process output id="backend-dev"
 process logs id="proc_1"
@@ -138,42 +144,49 @@ process clear
 
 Field rules:
 
-- `start` requires `command` and `name`.
+- `start` requires `command` and `name`. A live process name must be unique; starting a second live process under the same name is rejected so lookups by name stay unambiguous.
 - A started command must remain in the foreground. Do not include `&`, `setsid`, `coproc`, detached container flags, or daemon-mode options; the manager supervises the foreground process group.
-- `output`, `logs`, and `kill` require `id`.
+- `wait`, `output`, `logs`, and `kill` require `id`.
+- `wait` accepts `until` (`"exit"` by default, or `"output"` with `pattern`) and `timeoutSeconds` (default 60, at most 1,800). `pattern` is matched as a case-insensitive substring, and is only valid with `until="output"`.
 - `kill` accepts `force=true` to send `SIGKILL` instead of `SIGTERM`.
-- `start` accepts `continueAfterStart=true` only when the agent has immediate, specific, non-polling work to do after startup.
 
 ### Matching processes
 
-For `output`, `logs`, and `kill`, `id` must be either:
+For `wait`, `output`, `logs`, and `kill`, `id` must be either:
 
 - the exact process ID, such as `proc_1`
 - the exact friendly process name, such as `backend-dev`
 
-If multiple processes share the same name, use the process ID.
+A failed lookup names the known processes, so a mistyped id does not cost an extra `list` call.
 
-### Event-driven start behavior
+### Waiting instead of polling
 
-Do not poll after starting a process.
+Waiting is an action, not a loop:
 
-By default, `process start` ends the current agent turn. The intended pattern is:
+1. Call `process start`; it returns immediately and the agent keeps working.
+2. Call `process wait` when the next step depends on the process — `until="exit"` for work that finishes, `until="output"` with a `pattern` for a server that has to become ready.
+3. A timeout is a normal result: wait again with a longer `timeoutSeconds`, or look at the output.
 
-1. Call `process start`.
-2. Let the turn stop.
-3. Resume when Pi sends the automatic notification for process exit, failure, or external kill.
+`process wait` blocks inside one tool call, so waiting costs no extra turns and no context. Output matching starts at the beginning of the retained log, so a line printed between `start` and `wait` is still found. If a process ends while the agent is doing something else, Pi sends the automatic process-end notification.
 
-Use `continueAfterStart=true` only when there is immediate, useful work to do that is not polling.
-
-Repeated `process list`, `process output`, or `process logs` calls just to check whether a process is still running are an anti-pattern.
+Repeated `process list`, `process output`, or `process logs` calls just to check whether a process is still running are an anti-pattern. `process output` returns only new output and says how long ago the last check was, so a polling loop is visible in its own results.
 
 ### Logs and output
 
-- `process output` is for one-off diagnostic snapshots in the conversation.
+- `process output` returns what was printed since the agent's previous `output` call, and reports "no new output" instead of resending known lines.
 - `process logs` returns log file paths for deeper inspection and for the `/ps` overlay.
 - Each stdout, stderr, and combined log file keeps the latest output, up to 5 MiB. On overflow it trims to roughly 4 MiB so runaway output cannot grow without bound.
 - A session retains at most 16 live processes and 32 total process records. Stop live work or run `process clear` before starting more.
 - Use `output` and `logs` when the user asks, when debugging, or when investigating a specific problem.
+
+### Bash interception
+
+Whether a command runs for a long time cannot be decided from its name, so this extension does not try. Two mechanisms cover it instead:
+
+- Commands that **detach** from the session (`&`, `setsid`, `disown`, `gunicorn --daemon`, `ssh -f`, and the same through wrappers, shells, and command substitution) are blocked and routed to `process start`. Detached work cannot be supervised, logged, or stopped.
+- Every other bash command runs normally, but a bash call that sets no `timeout` of its own gets `interception.bashTimeoutSeconds`. If it is hit, the timeout message tells the agent to restart the work with the `process` tool. A timeout the agent chose itself is never overridden.
+
+Routing long work to the tool in the first place is the job of the tool description and the prompt guidelines, which the extension re-adds to the system prompt when a custom prompt would otherwise drop them.
 
 ### Killing processes
 

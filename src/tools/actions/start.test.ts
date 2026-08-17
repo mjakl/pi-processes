@@ -23,7 +23,7 @@ function fakeProcess(overrides: Partial<ProcessInfo> = {}): ProcessInfo {
 }
 
 describe("executeStart", () => {
-  it("terminates the agent turn by default so the notification becomes the next step", () => {
+  it("keeps the turn going and points at wait as the way to block", () => {
     const manager = {
       start: vi.fn(() => fakeProcess()),
     } as const;
@@ -35,25 +35,8 @@ describe("executeStart", () => {
     );
 
     expect(result.details.success).toBe(true);
-    expect(result.terminate).toBe(true);
     expect(result.details.message).toContain("Started at: 2024-01-02 03:04:05");
-    expect(result.details.message).toContain("wait for the automatic");
-  });
-
-  it("can keep the agent turn going when there is explicit non-polling work", () => {
-    const manager = {
-      start: vi.fn(() => fakeProcess()),
-    } as const;
-
-    const result = executeStart(
-      { name: "server", command: "pnpm dev", continueAfterStart: true },
-      manager as never,
-      { cwd: process.cwd() } as never,
-    );
-
-    expect(result.details.success).toBe(true);
-    expect(result.terminate).toBe(false);
-    expect(result.details.message).toContain("specific non-polling work");
+    expect(result.details.message).toContain('process wait id="proc_1"');
   });
 
   it("byte-bounds structured process details", () => {
@@ -104,7 +87,6 @@ describe("executeStart", () => {
     );
 
     expect(result.details.success).toBe(false);
-    expect(result.terminate).toBeUndefined();
     expect(result.details.message).toContain("exited during startup");
   });
 
@@ -144,6 +126,26 @@ describe("executeStart", () => {
     expect(daemonModeResult.details.success).toBe(false);
     expect(nestedResult.details.success).toBe(false);
     expect(manager.start).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a duplicate live name as an actionable failure", () => {
+    const manager = {
+      start: vi.fn().mockImplementation(() => {
+        throw new Error(
+          'A live process is already named "server" (proc_1); stop it first or choose a different name',
+        );
+      }),
+    } as const;
+
+    const result = executeStart(
+      { name: "server", command: "pnpm dev" },
+      manager as never,
+      { cwd: process.cwd() } as never,
+    );
+
+    expect(result.details.success).toBe(false);
+    expect(result.details.message).toContain("already named");
+    expect(result.details.message).toContain("proc_1");
   });
 
   it("returns a friendly error when process startup throws", () => {

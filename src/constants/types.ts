@@ -51,6 +51,36 @@ export type ResolveProcessResult =
   | { ok: true; info: ProcessInfo }
   | { ok: false; reason: "not_found" | "ambiguous"; matches?: ProcessInfo[] };
 
+export type WaitUntil = "exit" | "output";
+
+export type WaitOutcome =
+  | { reason: "exited"; info: ProcessInfo }
+  | {
+      reason: "matched";
+      info: ProcessInfo;
+      line: string;
+      stream: "stdout" | "stderr";
+    }
+  | { reason: "timeout"; info: ProcessInfo }
+  | { reason: "cancelled"; info: ProcessInfo };
+
+/**
+ * Output the agent has not seen yet. The manager remembers how much of each
+ * stream was already handed to the agent so repeated reads stay cheap and an
+ * unchanged process can be reported as such instead of resending its tail.
+ */
+export interface AgentOutputRead {
+  stdout: string[];
+  stderr: string[];
+  status: ProcessStatus;
+  firstRead: boolean;
+  hasNewOutput: boolean;
+  newStdoutLines: number;
+  newStderrLines: number;
+  previousReadAt: number | null;
+  emptyReads: number;
+}
+
 export interface ProcessPreview {
   id: string;
   name: string;
@@ -80,15 +110,15 @@ export interface ProcessesDetails {
   logFiles?: { stdoutFile: string; stderrFile: string; combinedFile: string };
   totalProcesses?: number;
   cleared?: number;
+  wait?: {
+    reason: "exited" | "matched" | "timeout";
+    waitedSeconds: number;
+    line?: string;
+    stream?: "stdout" | "stderr";
+  };
 }
 
 export interface ExecuteResult {
   content: Array<{ type: "text"; text: string }>;
   details: ProcessesDetails;
-  /**
-   * Hint to Pi's agent loop to stop after this tool batch. Used by process
-   * start so the model actually waits for the lifecycle notification instead
-   * of immediately continuing into list/output polling.
-   */
-  terminate?: boolean;
 }

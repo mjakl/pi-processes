@@ -8,11 +8,15 @@ The `process` tool is for **LLM use only**, not for users directly. Users can mo
 
 During UI tests that require processes to be running, either give the user a prompt to send to the agent (which will start the processes via the `process` tool), or use tmux to drive it programmatically. Never instruct the user to run shell commands manually.
 
-## Polling behavior
+## Waiting behavior
 
-The `process` tool is event-driven. After `process start`, do not poll with repeated `process list`, `process output`, or `process logs` calls just to check whether a process is still running or has exited.
+Waiting is an action, not a loop. Start a process once, then call `process wait` when the next step depends on it: `until="exit"` for work that finishes, or `until="output"` with a `pattern` for something that has to become ready. A timeout is a normal result — wait again or look at the output.
 
-Instead, start the process once and rely on the automatic notification sent when the process exits, fails, or is externally killed. If the next step is waiting, call `process start` by itself; it ends the agent turn by default so the notification becomes the next step. Set `continueAfterStart=true` only when there is immediate, specific, non-polling work to do. Use `output`/`logs` only for explicit inspection, debugging, or a one-off diagnostic snapshot.
+Do not poll with repeated `process list`, `process output`, or `process logs` calls to find out whether a process is still running. `process output` returns only what was printed since the last look, and the automatic notification arrives when a process exits, fails, or is externally killed.
+
+## Interception scope
+
+The extension does not keep a list of long-running commands; that is not decidable from a command name. It blocks commands that **detach** from the session, and bounds bash calls that set no timeout. Routing long work to the tool is the job of the tool description and `src/tools/guidelines.ts`.
 
 ## Stack
 

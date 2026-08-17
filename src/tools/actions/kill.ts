@@ -1,15 +1,18 @@
 import { type ExecuteResult, LIVE_STATUSES } from "../../constants";
 import type { ProcessManager } from "../../manager";
 import { sanitizeLine } from "../../utils";
-import { formatAmbiguousProcessMessage } from "../process-details";
+import {
+  formatAmbiguousProcessMessage,
+  formatUnknownProcessMessage,
+} from "../process-details";
 
 interface KillParams {
   id?: string;
   force?: boolean;
 }
 
-function notFoundResult(id: string): ExecuteResult {
-  const message = `Process not found: ${sanitizeLine(id)}`;
+function notFoundResult(id: string, manager: ProcessManager): ExecuteResult {
+  const message = formatUnknownProcessMessage(id, manager);
   return {
     content: [{ type: "text", text: message }],
     details: {
@@ -55,7 +58,7 @@ export async function executeKill(
   if (!resolved.ok) {
     return resolved.reason === "ambiguous"
       ? ambiguousResult(params.id, resolved.matches ?? [])
-      : notFoundResult(params.id);
+      : notFoundResult(params.id, manager);
   }
 
   const proc = resolved.info;

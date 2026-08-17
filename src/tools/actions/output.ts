@@ -1,7 +1,9 @@
 import { configLoader } from "../../config";
 import {
+  type AgentOutputRead,
   type ExecuteResult,
   LIVE_STATUSES,
+  type ProcessInfo,
   type ResolveProcessResult,
 } from "../../constants";
 import type { ProcessManager } from "../../manager";
@@ -11,7 +13,10 @@ import {
   sanitizeLine,
   truncateUtf8Bytes,
 } from "../../utils";
-import { formatAmbiguousProcessMessage } from "../process-details";
+import {
+  formatAmbiguousProcessMessage,
+  formatUnknownProcessMessage,
+} from "../process-details";
 
 const MAX_BYTES = 50 * 1024; // 50KB
 
@@ -23,22 +28,14 @@ function resolveProcessResult(
   result: ResolveProcessResult,
   action: "output" | "logs",
   id: string,
+  manager: ProcessManager,
 ): ExecuteResult | null {
   if (result.ok) return null;
 
-  if (result.reason === "ambiguous") {
-    const message = formatAmbiguousProcessMessage(id, result.matches ?? []);
-    return {
-      content: [{ type: "text", text: message }],
-      details: {
-        action,
-        success: false,
-        message,
-      },
-    };
-  }
-
-  const message = `Process not found: ${sanitizeLine(id)}`;
+  const message =
+    result.reason === "ambiguous"
+      ? formatAmbiguousProcessMessage(id, result.matches ?? [])
+      : formatUnknownProcessMessage(id, manager);
   return {
     content: [{ type: "text", text: message }],
     details: {
@@ -66,12 +63,17 @@ export async function executeOutput(
 
   const resolved = manager.resolve(params.id);
   if (!resolved.ok) {
-    return resolveProcessResult(resolved, "output", params.id) as ExecuteResult;
+    return resolveProcessResult(
+      resolved,
+      "output",
+      params.id,
+      manager,
+    ) as ExecuteResult;
   }
 
   const proc = resolved.info;
   const { defaultTailLines } = configLoader.getConfig().output;
-  const output = await manager.getOutput(proc.id, defaultTailLines);
+  const output = await manager.readAgentOutput(proc.id, defaultTailLines);
   if (!output) {
     const message = `Could not read output for: ${proc.id}`;
     return {
@@ -86,9 +88,7 @@ export async function executeOutput(
 
   const latestProc = manager.get(proc.id) ?? proc;
   const logFiles = manager.getLogFiles(proc.id);
-  const stdoutLines = output.stdout.length;
-  const stderrLines = output.stderr.length;
-  const message = `"${sanitizeLine(latestProc.name)}" (${latestProc.id}) [${formatStatus(latestProc)}]: ${stdoutLines} stdout lines, ${stderrLines} stderr lines`;
+  const message = summarize(latestProc, output);
 
   // Build sanitized text content, then truncate from the tail like bash does,
   // so the agent sees the most recent output.
@@ -101,12 +101,8 @@ export async function executeOutput(
     outputParts.push("\nstderr:");
     outputParts.push(...output.stderr.map(sanitizeLine));
   }
-  if (LIVE_STATUSES.has(latestProc.status)) {
-    outputParts.push(
-      "",
-      "[Process is still active. This was a one-off snapshot; wait for the automatic process-end notification instead of calling process output/list/logs repeatedly.]",
-    );
-  }
+  const hint = waitHint(latestProc, output);
+  if (hint) outputParts.push("", hint);
 
   const fullText = outputParts.join("\n");
   const { maxOutputLines } = configLoader.getConfig().output;
@@ -114,8 +110,8 @@ export async function executeOutput(
 
   const outputPreview = {
     status: latestProc.status,
-    stdoutTotal: output.stdout.length,
-    stderrTotal: output.stderr.length,
+    stdoutTotal: output.newStdoutLines,
+    stderrTotal: output.newStderrLines,
     hadAnsi: [...output.stdout, ...output.stderr].some(hasAnsi),
     stdout: output.stdout
       .slice(-20)
@@ -134,6 +130,36 @@ export async function executeOutput(
       output: outputPreview,
     },
   };
+}
+
+function summarize(proc: ProcessInfo, output: AgentOutputRead): string {
+  const header = `"${sanitizeLine(proc.name)}" (${proc.id}) [${formatStatus(proc)}]`;
+  if (output.hasNewOutput) {
+    const scope = output.firstRead ? "" : " new";
+    return `${header}: ${output.newStdoutLines}${scope} stdout lines, ${output.newStderrLines}${scope} stderr lines`;
+  }
+  if (output.firstRead) {
+    return `${header}: no output yet`;
+  }
+  const since = output.previousReadAt
+    ? ` since your last check ${Math.max(0, Math.round((Date.now() - output.previousReadAt) / 1000))}s ago`
+    : " since your last check";
+  return `${header}: no new output${since}`;
+}
+
+/**
+ * Point at the blocking action instead of leaving repeated checks as the only
+ * way to find out what a live process is doing.
+ */
+function waitHint(proc: ProcessInfo, output: AgentOutputRead): string | null {
+  if (!LIVE_STATUSES.has(proc.status)) return null;
+  if (output.hasNewOutput) return null;
+
+  const repeated =
+    output.emptyReads > 1
+      ? `You have checked ${output.emptyReads} times with nothing new. `
+      : "";
+  return `[${repeated}Waiting is an action: process wait id="${proc.id}" until="exit", or until="output" with a pattern, blocks until something happens.]`;
 }
 
 /**

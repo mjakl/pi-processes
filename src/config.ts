@@ -20,8 +20,10 @@ interface ProcessesConfig {
     shellPath?: string;
   };
   interception?: {
-    /** Block shell backgrounding and obvious long-running bash commands, and guide the model to use the process tool. */
+    /** Block bash commands that detach from the session, and guide the model to the process tool. */
     blockBackgroundCommands?: boolean;
+    /** Timeout applied to bash calls that set none, so a long-running command cannot hang the agent. 0 disables. */
+    bashTimeoutSeconds?: number;
   };
 }
 
@@ -35,10 +37,12 @@ export interface ResolvedProcessesConfig {
   };
   interception: {
     blockBackgroundCommands: boolean;
+    bashTimeoutSeconds: number;
   };
 }
 
 const MAX_OUTPUT_LINES = 2000;
+const MAX_BASH_TIMEOUT_SECONDS = 3600;
 
 const DEFAULT_CONFIG: ResolvedProcessesConfig = {
   output: {
@@ -48,6 +52,7 @@ const DEFAULT_CONFIG: ResolvedProcessesConfig = {
   execution: {},
   interception: {
     blockBackgroundCommands: true,
+    bashTimeoutSeconds: 300,
   },
 };
 
@@ -112,8 +117,24 @@ export function resolveConfig(
         config?.interception?.blockBackgroundCommands,
         DEFAULT_CONFIG.interception.blockBackgroundCommands,
       ),
+      bashTimeoutSeconds: nonNegativeIntegerOrDefault(
+        config?.interception?.bashTimeoutSeconds,
+        DEFAULT_CONFIG.interception.bashTimeoutSeconds,
+        MAX_BASH_TIMEOUT_SECONDS,
+      ),
     },
   };
+}
+
+function nonNegativeIntegerOrDefault(
+  value: unknown,
+  fallback: number,
+  maximum: number,
+): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    return fallback;
+  }
+  return Math.min(value, maximum);
 }
 
 function positiveIntegerOrDefault(
