@@ -1,6 +1,6 @@
 {
   "name": "@mjakl/pi-processes",
-  "version": "0.8.1",
+  "version": "1.2.0",
   "license": "MIT",
   "type": "module",
   "private": false,
@@ -25,7 +25,8 @@
   "files": [
     "src",
     "!src/**/*.test.ts",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -47,7 +48,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check",
     "format": "biome check --write",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "pnpm lint && pnpm typecheck && pnpm test"
   },
   "packageManager": "pnpm@10.26.1",
   "peerDependenciesMeta": {
