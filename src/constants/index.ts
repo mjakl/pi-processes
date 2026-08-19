@@ -12,4 +12,8 @@ export type {
   WaitUntil,
 } from "./types";
 
-export { LIVE_STATUSES, MESSAGE_TYPE_PROCESS_UPDATE } from "./types";
+export {
+  LIVE_STATUSES,
+  MESSAGE_TYPE_PROCESS_READINESS,
+  MESSAGE_TYPE_PROCESS_UPDATE,
+} from "./types";

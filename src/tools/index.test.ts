@@ -3,7 +3,9 @@ import type { ProcessManager } from "../manager";
 import { setupProcessesTools } from "./index";
 
 interface CapturedTool {
+  description: string;
   executionMode: string;
+  promptGuidelines: string[];
   parameters: {
     properties: { action: { type: string; enum: string[]; anyOf?: unknown } };
   };
@@ -21,7 +23,10 @@ interface CapturedTool {
   ) => { render: (width: number) => string[] };
 }
 
-function captureTool(manager: ProcessManager): CapturedTool {
+function captureTool(
+  manager: ProcessManager,
+  exposeWait = false,
+): CapturedTool {
   let captured: CapturedTool | undefined;
   setupProcessesTools(
     {
@@ -30,6 +35,7 @@ function captureTool(manager: ProcessManager): CapturedTool {
       },
     } as never,
     manager,
+    { exposeWait },
   );
   if (!captured) throw new Error("Tool was not registered");
   return captured;
@@ -43,7 +49,6 @@ describe("process tool contract", () => {
     expect(action.type).toBe("string");
     expect(action.enum).toEqual([
       "start",
-      "wait",
       "list",
       "output",
       "logs",
@@ -52,6 +57,23 @@ describe("process tool contract", () => {
     ]);
     expect(action.anyOf).toBeUndefined();
     expect(tool.executionMode).toBe("sequential");
+  });
+
+  it("exposes blocking wait only for non-interactive runs", () => {
+    const interactive = captureTool({} as ProcessManager);
+    const noninteractive = captureTool({} as ProcessManager, true);
+
+    expect(interactive.parameters.properties.action.enum).not.toContain("wait");
+    expect(noninteractive.parameters.properties.action.enum).toContain("wait");
+    expect("until" in interactive.parameters.properties).toBe(false);
+    expect("until" in noninteractive.parameters.properties).toBe(true);
+    expect("readyPattern" in interactive.parameters.properties).toBe(true);
+    expect("readyPattern" in noninteractive.parameters.properties).toBe(false);
+    expect(interactive.description).not.toContain("process wait");
+    expect(interactive.promptGuidelines.join("\n")).not.toContain(
+      "process wait",
+    );
+    expect(noninteractive.description).toContain("wait:");
   });
 
   it("rejects blank required and action-irrelevant parameters", async () => {
@@ -109,7 +131,7 @@ describe("process tool contract", () => {
       })),
       getCombinedOutput: vi.fn(async () => []),
     } as unknown as ProcessManager;
-    const tool = captureTool(manager);
+    const tool = captureTool(manager, true);
     const call = (params: Record<string, unknown>) =>
       tool.execute("call", params, undefined, undefined, {
         cwd: process.cwd(),
@@ -136,6 +158,53 @@ describe("process tool contract", () => {
     expect(manager.waitFor).toHaveBeenCalledWith(
       "proc_1",
       expect.objectContaining({ until: "exit", timeoutMs: 5000 }),
+    );
+  });
+
+  it("requires a readiness pattern when a readiness timeout is set", async () => {
+    const manager = {
+      start: vi.fn(() => ({
+        id: "proc_1",
+        name: "server",
+        pid: 123,
+        command: "pnpm dev",
+        cwd: process.cwd(),
+        startTime: Date.now(),
+        endTime: null,
+        status: "running",
+        exitCode: null,
+        success: null,
+        stdoutFile: "/tmp/stdout.log",
+        stderrFile: "/tmp/stderr.log",
+      })),
+    } as unknown as ProcessManager;
+    const tool = captureTool(manager);
+    const call = (params: Record<string, unknown>) =>
+      tool.execute("call", params, undefined, undefined, {
+        cwd: process.cwd(),
+      });
+
+    await expect(
+      call({
+        action: "start",
+        name: "server",
+        command: "pnpm dev",
+        readyTimeoutSeconds: 30,
+      }),
+    ).rejects.toThrow("Missing required parameter: readyPattern");
+
+    await call({
+      action: "start",
+      name: "server",
+      command: "pnpm dev",
+      readyPattern: "listening on",
+      readyTimeoutSeconds: 30,
+    });
+    expect(manager.start).toHaveBeenCalledWith(
+      "server",
+      "pnpm dev",
+      process.cwd(),
+      { pattern: "listening on", timeoutMs: 30_000 },
     );
   });
 

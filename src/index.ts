@@ -21,5 +21,13 @@ export default async function (pi: ExtensionAPI) {
 
   setupProcessesHooks(pi, manager, configLoader.getConfig());
   setupProcessesCommands(pi, manager);
-  setupProcessesTools(pi, manager);
+
+  let toolRegistered = false;
+  pi.on("session_start", (_event, ctx) => {
+    if (toolRegistered) return;
+    toolRegistered = true;
+    setupProcessesTools(pi, manager, {
+      exposeWait: ctx.mode === "print" || ctx.mode === "json",
+    });
+  });
 }

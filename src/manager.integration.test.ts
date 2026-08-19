@@ -51,6 +51,31 @@ describe("ProcessManager (real processes)", () => {
     }
   }, 20000);
 
+  it("emits readiness without blocking the caller", async () => {
+    const manager = new ProcessManager();
+    try {
+      const ready = new Promise<unknown>((resolve) => {
+        manager.onEvent((event) => {
+          if (event.type === "process_ready") resolve(event);
+        });
+      });
+      manager.start(
+        "event-probe",
+        "echo booting; sleep 0.3; echo 'Listening on :3000'; sleep 2",
+        process.cwd(),
+        { pattern: "listening on", timeoutMs: 5000 },
+      );
+
+      await expect(ready).resolves.toMatchObject({
+        type: "process_ready",
+        line: "Listening on :3000",
+        stream: "stdout",
+      });
+    } finally {
+      manager.cleanup();
+    }
+  }, 20000);
+
   it("matches a line that was still being written when first seen", async () => {
     const manager = new ProcessManager();
     try {

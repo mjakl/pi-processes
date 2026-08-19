@@ -16,7 +16,12 @@ interface ProcessUpdateDetails {
 export function setupProcessEndHook(pi: ExtensionAPI, manager: ProcessManager) {
   manager.onEvent((event) => {
     if (event.type !== "process_ended" || !event.triggerAgentTurn) return;
-    void notifyProcessEnd(pi, manager, event.info).catch(() => {
+    void notifyProcessEnd(
+      pi,
+      manager,
+      event.info,
+      event.readinessPattern,
+    ).catch(() => {
       // Process lifecycle must not be disrupted by notification failures.
     });
   });
@@ -26,6 +31,7 @@ async function notifyProcessEnd(
   pi: ExtensionAPI,
   manager: ProcessManager,
   info: ProcessInfo,
+  readinessPattern?: string,
 ): Promise<void> {
   const runtime = formatRuntime(info.startTime, info.endTime);
   const processName = sanitizeLine(info.name);
@@ -35,7 +41,10 @@ async function notifyProcessEnd(
       : info.success
         ? `Process "${processName}" (${info.id}) completed successfully after ${runtime}.`
         : `Process "${processName}" (${info.id}) crashed with exit code ${info.exitCode ?? "?"} after ${runtime}.`;
-  const message = await buildAgentMessage(summary, info, manager);
+  const readinessSummary = readinessPattern
+    ? `${summary} It exited before the readiness pattern "${sanitizeLine(readinessPattern)}" appeared.`
+    : summary;
+  const message = await buildAgentMessage(readinessSummary, info, manager);
 
   const details: ProcessUpdateDetails = {
     processId: info.id,

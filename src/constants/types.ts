@@ -1,5 +1,6 @@
-// Custom message type for process update notifications
+// Custom message types for process lifecycle notifications
 export const MESSAGE_TYPE_PROCESS_UPDATE = "pi-processes:update";
+export const MESSAGE_TYPE_PROCESS_READINESS = "pi-processes:readiness";
 
 export type ProcessStatus =
   | "running"
@@ -31,7 +32,25 @@ export interface ProcessInfo {
 
 export type ManagerEvent =
   | { type: "process_started"; info: ProcessInfo }
-  | { type: "process_ended"; info: ProcessInfo; triggerAgentTurn: boolean }
+  | {
+      type: "process_ended";
+      info: ProcessInfo;
+      triggerAgentTurn: boolean;
+      readinessPattern?: string;
+    }
+  | {
+      type: "process_ready";
+      info: ProcessInfo;
+      pattern: string;
+      line: string;
+      stream: "stdout" | "stderr";
+    }
+  | {
+      type: "process_readiness_timeout";
+      info: ProcessInfo;
+      pattern: string;
+      timeoutSeconds: number;
+    }
   | { type: "processes_changed" };
 
 export type KillResult =

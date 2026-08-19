@@ -10,9 +10,9 @@ During UI tests that require processes to be running, either give the user a pro
 
 ## Waiting behavior
 
-Waiting is an action, not a loop. Start a process once, then call `process wait` when the next step depends on it: `until="exit"` for work that finishes, or `until="output"` with a `pattern` for something that has to become ready. A timeout is a normal result — wait again or look at the output.
+Managed processes continue across agent turns. In TUI and RPC modes, start a process once, do any independent work, then give a short status update and end the turn. The automatic process-end notification resumes the agent. For a server or watcher, pass `readyPattern` to `process start` for a one-shot readiness notification; `readyTimeoutSeconds` controls when that monitor reports a timeout without stopping the process.
 
-Do not poll with repeated `process list`, `process output`, or `process logs` calls to find out whether a process is still running. `process output` returns only what was printed since the last look, and the automatic notification arrives when a process exits, fails, or is externally killed.
+Do not poll with repeated `process list`, `process output`, or `process logs` calls. In print and JSON modes only, `process wait` remains available when the one-shot run depends on process completion.
 
 ## Interception scope
 

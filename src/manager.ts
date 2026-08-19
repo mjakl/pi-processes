@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 import {
   type AgentOutputRead,
@@ -34,10 +35,26 @@ type StreamCursors = Record<StreamName, LogCursor>;
 /** Scanners only track what they consumed; they never skip ahead. */
 type ScanCursors = Record<StreamName, { offset: number }>;
 
+interface ReadinessStreamMatcher {
+  decoder: StringDecoder;
+  tail: string;
+}
+
+interface ReadinessWatch {
+  pattern: string;
+  needle: string;
+  timeoutMs: number;
+  timer: NodeJS.Timeout | null;
+  streams: Record<StreamName, ReadinessStreamMatcher>;
+}
+
 interface ManagedProcess extends ProcessInfo {
   lastSignalSent: NodeJS.Signals | null;
   combinedFile: string;
   triggerAgentTurnOnEnd: boolean;
+  readiness: ReadinessWatch | null;
+  readinessPatternAtEnd: string | null;
+  activeWaits: number;
   /** What the agent has already been shown, so later reads only return new output. */
   agentCursors: StreamCursors;
   agentReadAt: number | null;
@@ -65,6 +82,7 @@ const LOG_FILE_RETAIN_BYTES = 4 * 1024 * 1024;
 const LOG_READ_MAX_BYTES = 512 * 1024;
 const CHILD_CLOSE_WAIT_MS = 500;
 const WAIT_POLL_MS = 200;
+const READINESS_TAIL_CHARS = 2000;
 const LOG_FILE_OPTIONS = {
   maxBytes: LOG_FILE_MAX_BYTES,
   retainBytes: LOG_FILE_RETAIN_BYTES,
@@ -119,12 +137,17 @@ export class ProcessManager {
     this.emit({ type: "processes_changed" });
 
     if (next === "exited" || next === "killed") {
+      const readinessPattern =
+        managed.readinessPatternAtEnd ?? this.cancelReadiness(managed);
+      managed.readinessPatternAtEnd = null;
       for (const waiter of managed.endWaiters) waiter();
       managed.endWaiters.clear();
       this.emit({
         type: "process_ended",
         info: this.toProcessInfo(managed),
-        triggerAgentTurn: managed.triggerAgentTurnOnEnd,
+        triggerAgentTurn:
+          managed.triggerAgentTurnOnEnd && managed.activeWaits === 0,
+        ...(readinessPattern ? { readinessPattern } : {}),
       });
     }
 
@@ -207,7 +230,12 @@ export class ProcessManager {
     }
   }
 
-  start(name: string, command: string, cwd: string): ProcessInfo {
+  start(
+    name: string,
+    command: string,
+    cwd: string,
+    readiness?: { pattern: string; timeoutMs: number },
+  ): ProcessInfo {
     if (this.processes.size >= MAX_RETAINED_PROCESSES) {
       throw new Error(
         `Process record limit reached (${MAX_RETAINED_PROCESSES}); clear finished processes before starting another`,
@@ -307,6 +335,20 @@ export class ProcessManager {
       lastSignalSent: null,
       combinedFile,
       triggerAgentTurnOnEnd: true,
+      readiness: readiness
+        ? {
+            pattern: readiness.pattern,
+            needle: readiness.pattern.toLowerCase(),
+            timeoutMs: readiness.timeoutMs,
+            timer: null,
+            streams: {
+              stdout: { decoder: new StringDecoder("utf8"), tail: "" },
+              stderr: { decoder: new StringDecoder("utf8"), tail: "" },
+            },
+          }
+        : null,
+      readinessPatternAtEnd: null,
+      activeWaits: 0,
       agentCursors: {
         stdout: { offset: 0, end: 0 },
         stderr: { offset: 0, end: 0 },
@@ -334,10 +376,12 @@ export class ProcessManager {
     child.stdout?.on("data", (data: Buffer) => {
       if (!trackingStarted) return;
       child.stdout?.pause();
-      void Promise.allSettled([
+      const writes = Promise.allSettled([
         stdoutLog.append(data),
         combinedLog.write("stdout", data),
-      ]).then((results) => {
+      ]);
+      this.observeReadinessOutput(managed, "stdout", data);
+      void writes.then((results) => {
         recordLogFailures(results);
         child.stdout?.resume();
       });
@@ -353,10 +397,12 @@ export class ProcessManager {
     child.stderr?.on("data", (data: Buffer) => {
       if (!trackingStarted) return;
       child.stderr?.pause();
-      void Promise.allSettled([
+      const writes = Promise.allSettled([
         stderrLog.append(data),
         combinedLog.write("stderr", data),
-      ]).then((results) => {
+      ]);
+      this.observeReadinessOutput(managed, "stderr", data);
+      void writes.then((results) => {
         recordLogFailures(results);
         child.stderr?.resume();
       });
@@ -384,6 +430,9 @@ export class ProcessManager {
       managed.leaderExited = true;
       managed.leaderExitCode ??= code ?? (managed.processError ? -1 : null);
       managed.leaderExitSignal ??= signal;
+      if (!this.isManagedGroupAlive(managed)) {
+        managed.readinessPatternAtEnd ??= this.cancelReadiness(managed) ?? null;
+      }
       void managed
         .closeLogs()
         .catch(() => {
@@ -400,10 +449,13 @@ export class ProcessManager {
     child.on("error", (err) => {
       if (!trackingStarted) return;
       const message = `Process error: ${err.message}\n`;
-      void Promise.allSettled([
+      const messageBuffer = Buffer.from(message);
+      const writes = Promise.allSettled([
         stderrLog.append(message),
-        combinedLog.write("stderr", Buffer.from(message)),
-      ]).then(recordLogFailures);
+        combinedLog.write("stderr", messageBuffer),
+      ]);
+      this.observeReadinessOutput(managed, "stderr", messageBuffer);
+      void writes.then(recordLogFailures);
       managed.processError = true;
     });
 
@@ -419,10 +471,85 @@ export class ProcessManager {
     trackingStarted = true;
     child.unref();
     this.processes.set(id, managed);
+    this.armReadiness(managed);
     this.emit({ type: "process_started", info: this.toProcessInfo(managed) });
     this.ensureWatcherRunning();
 
     return this.toProcessInfo(managed);
+  }
+
+  private armReadiness(managed: ManagedProcess): void {
+    const readiness = managed.readiness;
+    if (!readiness) return;
+
+    readiness.timer = setTimeout(
+      () => {
+        if (managed.readiness !== readiness || this.disposed) return;
+        // `exit` precedes `close`; leave arbitration to `close` after all stdio
+        // data events have been delivered so exit wins over a late timeout.
+        if (managed.leaderExited && !this.isManagedGroupAlive(managed)) {
+          managed.readinessPatternAtEnd ??=
+            this.cancelReadiness(managed) ?? null;
+          return;
+        }
+
+        managed.readiness = null;
+        this.emit({
+          type: "process_readiness_timeout",
+          info: this.toProcessInfo(managed),
+          pattern: readiness.pattern,
+          timeoutSeconds: Math.ceil(readiness.timeoutMs / 1000),
+        });
+      },
+      Math.max(1, readiness.timeoutMs),
+    );
+    readiness.timer.unref();
+  }
+
+  private observeReadinessOutput(
+    managed: ManagedProcess,
+    stream: StreamName,
+    data: Buffer,
+  ): void {
+    const readiness = managed.readiness;
+    if (!readiness || this.disposed) return;
+
+    const matcher = readiness.streams[stream];
+    const text = matcher.decoder.write(data);
+    if (!text) return;
+
+    const candidate = matcher.tail + text;
+    const matchIndex = candidate.toLowerCase().indexOf(readiness.needle);
+    if (matchIndex < 0) {
+      matcher.tail = candidate.slice(-READINESS_TAIL_CHARS);
+      return;
+    }
+
+    const line =
+      candidate
+        .split("\n")
+        .find((candidateLine) =>
+          candidateLine.toLowerCase().includes(readiness.needle),
+        ) ?? readiness.pattern;
+
+    managed.readiness = null;
+    if (readiness.timer) clearTimeout(readiness.timer);
+    this.emit({
+      type: "process_ready",
+      info: this.toProcessInfo(managed),
+      pattern: readiness.pattern,
+      line,
+      stream,
+    });
+  }
+
+  private cancelReadiness(managed: ManagedProcess): string | undefined {
+    const readiness = managed.readiness;
+    if (!readiness) return undefined;
+
+    managed.readiness = null;
+    if (readiness.timer) clearTimeout(readiness.timer);
+    return readiness.pattern;
   }
 
   list(): ProcessInfo[] {
@@ -599,60 +726,71 @@ export class ProcessManager {
     const managed = this.processes.get(id);
     if (!managed) return null;
 
-    const deadline = Date.now() + opts.timeoutMs;
-    const info = () => this.toProcessInfo(managed);
+    managed.activeWaits++;
+    try {
+      const deadline = Date.now() + opts.timeoutMs;
+      const info = () => this.toProcessInfo(managed);
+      const abortSignal = opts.abortSignal
+        ? AbortSignal.any([
+            opts.abortSignal,
+            this.cleanupAbortController.signal,
+          ])
+        : this.cleanupAbortController.signal;
 
-    if (opts.until === "exit") {
-      if (!LIVE_STATUSES.has(managed.status)) {
-        return { reason: "exited", info: info() };
-      }
-      if (opts.abortSignal?.aborted) {
-        return { reason: "cancelled", info: info() };
-      }
+      if (opts.until === "exit") {
+        if (!LIVE_STATUSES.has(managed.status)) {
+          return { reason: "exited", info: info() };
+        }
+        if (abortSignal.aborted) {
+          return { reason: "cancelled", info: info() };
+        }
 
-      const result = await this.waitForGracePeriod(
-        managed,
-        opts.timeoutMs,
-        opts.abortSignal,
-      );
-      if (result === "aborted") return { reason: "cancelled", info: info() };
-      return LIVE_STATUSES.has(managed.status)
-        ? { reason: "timeout", info: info() }
-        : { reason: "exited", info: info() };
-    }
-
-    const pattern = opts.pattern ?? "";
-    const scanned: ScanCursors = {
-      stdout: { offset: 0 },
-      stderr: { offset: 0 },
-    };
-    for (;;) {
-      const match = await this.scanForPattern(managed, scanned, pattern);
-      if (match === null) return null;
-      if (match) {
-        return {
-          reason: "matched",
-          info: info(),
-          line: match.line,
-          stream: match.stream,
-        };
-      }
-      if (!LIVE_STATUSES.has(managed.status)) {
-        return { reason: "exited", info: info() };
-      }
-      if (opts.abortSignal?.aborted) {
-        return { reason: "cancelled", info: info() };
+        const result = await this.waitForGracePeriod(
+          managed,
+          opts.timeoutMs,
+          abortSignal,
+        );
+        if (result === "aborted") return { reason: "cancelled", info: info() };
+        return LIVE_STATUSES.has(managed.status)
+          ? { reason: "timeout", info: info() }
+          : { reason: "exited", info: info() };
       }
 
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) return { reason: "timeout", info: info() };
+      const pattern = opts.pattern ?? "";
+      const scanned: ScanCursors = {
+        stdout: { offset: 0 },
+        stderr: { offset: 0 },
+      };
+      for (;;) {
+        const match = await this.scanForPattern(managed, scanned, pattern);
+        if (match === null) return null;
+        if (match) {
+          return {
+            reason: "matched",
+            info: info(),
+            line: match.line,
+            stream: match.stream,
+          };
+        }
+        if (!LIVE_STATUSES.has(managed.status)) {
+          return { reason: "exited", info: info() };
+        }
+        if (abortSignal.aborted) {
+          return { reason: "cancelled", info: info() };
+        }
 
-      const result = await this.waitForGracePeriod(
-        managed,
-        Math.min(WAIT_POLL_MS, remaining),
-        opts.abortSignal,
-      );
-      if (result === "aborted") return { reason: "cancelled", info: info() };
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) return { reason: "timeout", info: info() };
+
+        const result = await this.waitForGracePeriod(
+          managed,
+          Math.min(WAIT_POLL_MS, remaining),
+          abortSignal,
+        );
+        if (result === "aborted") return { reason: "cancelled", info: info() };
+      }
+    } finally {
+      managed.activeWaits--;
     }
   }
 
@@ -912,6 +1050,7 @@ export class ProcessManager {
       }
     }
 
+    this.cancelReadiness(managed);
     const graceMs = signal === "SIGKILL" ? 200 : timeoutMs;
     const waitResult = await this.waitForGracePeriod(
       managed,
@@ -1042,6 +1181,9 @@ export class ProcessManager {
     this.disposed = true;
     this.cleanupAbortController.abort();
     this.stopWatcher();
+    for (const managed of this.processes.values()) {
+      this.cancelReadiness(managed);
+    }
     this.events.removeAllListeners("event");
     this.shutdownKillAll();
     for (const managed of this.processes.values()) {

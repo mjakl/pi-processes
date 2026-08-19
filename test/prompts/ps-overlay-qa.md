@@ -1,6 +1,6 @@
 Run through all steps without waiting for confirmation. Keep messages short.
 
-1. Start `./test/test-output.sh` as a background process named `stream`.
+1. Start `./test/test-output.sh` as a background process named `stream`, with readiness pattern `Line 00001` and a 10-second readiness timeout.
 2. Start `./test/test-exit-success.sh 2` as a background process named `success`.
 3. Start `./test/test-exit-failure.sh 2` as a background process named `failure`.
 4. Start `./test/test-ignore-term.sh` as a background process named `stubborn`.

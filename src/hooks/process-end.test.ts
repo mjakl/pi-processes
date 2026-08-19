@@ -78,6 +78,23 @@ describe("setupProcessEndHook", () => {
     expect(options).toEqual({ triggerTurn: true, deliverAs: "steer" });
   });
 
+  it("reports when a process exits before its readiness marker", async () => {
+    const { listener, pi } = setupHarness();
+
+    listener({
+      type: "process_ended",
+      info: endedProcess(),
+      triggerAgentTurn: true,
+      readinessPattern: "listening on",
+    });
+
+    await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(1));
+    const [message] = vi.mocked(pi.sendMessage).mock.calls[0] ?? [];
+    expect(message?.content).toContain(
+      'exited before the readiness pattern "listening on" appeared',
+    );
+  });
+
   it("reports unavailable process logs in the notification", async () => {
     const { listener, pi } = setupHarness(null);
 

@@ -720,6 +720,137 @@ describe("ProcessManager", () => {
     });
   });
 
+  it("emits a one-shot readiness event for matching output", async () => {
+    const events: ManagerEvent[] = [];
+    manager.onEvent((event) => events.push(event));
+    manager.start("server", "pnpm dev", process.cwd(), {
+      pattern: "listening on",
+      timeoutMs: 5000,
+    });
+
+    children[0].stdout.emit("data", Buffer.from("Listen"));
+    await manager.getOutput("proc_1");
+    await vi.advanceTimersByTimeAsync(10);
+    expect(events.some((event) => event.type === "process_ready")).toBe(false);
+
+    children[0].stdout.emit("data", Buffer.from("ing on :3000\n"));
+    await manager.getOutput("proc_1");
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "process_ready",
+        pattern: "listening on",
+        line: "Listening on :3000",
+        stream: "stdout",
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(
+      events.filter((event) => event.type === "process_ready"),
+    ).toHaveLength(1);
+    expect(
+      events.some((event) => event.type === "process_readiness_timeout"),
+    ).toBe(false);
+  });
+
+  it("checks final output before reporting an immediate exit", async () => {
+    const events: ManagerEvent[] = [];
+    manager.onEvent((event) => events.push(event));
+    manager.start("probe", "echo ready", process.cwd(), {
+      pattern: "ready",
+      timeoutMs: 5000,
+    });
+
+    children[0].stdout.emit("data", Buffer.from("ready\n"));
+    children[0].emit("close", 0, null);
+    await manager.getOutput("proc_1");
+    await vi.advanceTimersByTimeAsync(10);
+
+    const lifecycle = events
+      .map((event) => event.type)
+      .filter((type) => type === "process_ready" || type === "process_ended");
+    expect(lifecycle).toEqual(["process_ready", "process_ended"]);
+  });
+
+  it("lets exit win when close arrives after the readiness deadline", async () => {
+    const events: ManagerEvent[] = [];
+    manager.onEvent((event) => events.push(event));
+    manager.start("probe", "sleep 1", process.cwd(), {
+      pattern: "ready",
+      timeoutMs: 1000,
+    });
+
+    await vi.advanceTimersByTimeAsync(900);
+    children[0].emit("exit", 1, null);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(
+      events.some((event) => event.type === "process_readiness_timeout"),
+    ).toBe(false);
+
+    children[0].emit("close", 1, null);
+    await manager.getOutput("proc_1");
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "process_ended",
+        readinessPattern: "ready",
+      }),
+    );
+    expect(
+      events.some((event) => event.type === "process_readiness_timeout"),
+    ).toBe(false);
+  });
+
+  it("emits a readiness timeout without stopping the process", async () => {
+    const events: ManagerEvent[] = [];
+    manager.onEvent((event) => events.push(event));
+    const proc = manager.start("server", "pnpm dev", process.cwd(), {
+      pattern: "listening on",
+      timeoutMs: 1000,
+    });
+    mocks.isProcessGroupAlive.mockReturnValue(true);
+
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "process_readiness_timeout",
+        pattern: "listening on",
+        timeoutSeconds: 1,
+      }),
+    );
+    expect(manager.get(proc.id)?.status).toBe("running");
+  });
+
+  it("cancels readiness when the process exits first", async () => {
+    const events: ManagerEvent[] = [];
+    manager.onEvent((event) => events.push(event));
+    manager.start("server", "pnpm dev", process.cwd(), {
+      pattern: "listening on",
+      timeoutMs: 1000,
+    });
+
+    children[0].emit("close", 1, null);
+    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "process_ended",
+        readinessPattern: "listening on",
+      }),
+    );
+    expect(
+      events.some(
+        (event) =>
+          event.type === "process_ready" ||
+          event.type === "process_readiness_timeout",
+      ),
+    ).toBe(false);
+  });
+
   it("waits for a process to exit", async () => {
     const proc = manager.start("tests", "pnpm test", process.cwd());
 
@@ -734,6 +865,29 @@ describe("ProcessManager", () => {
       reason: "exited",
       info: { status: "exited", exitCode: 0 },
     });
+  });
+
+  it("suppresses duplicate end notifications while a wait is active", async () => {
+    const events: ManagerEvent[] = [];
+    manager.onEvent((event) => {
+      if (event.type === "process_ended") events.push(event);
+    });
+    const proc = manager.start("tests", "pnpm test", process.cwd());
+    const pending = manager.waitFor(proc.id, {
+      until: "exit",
+      timeoutMs: 5000,
+    });
+
+    children[0].emit("close", 0, null);
+    await vi.advanceTimersByTimeAsync(10);
+
+    await expect(pending).resolves.toMatchObject({ reason: "exited" });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "process_ended",
+        triggerAgentTurn: false,
+      }),
+    );
   });
 
   it("returns immediately for a process that already finished", async () => {
@@ -820,6 +974,19 @@ describe("ProcessManager", () => {
     await vi.advanceTimersByTimeAsync(10);
 
     expect(await pending).toMatchObject({ reason: "cancelled" });
+  });
+
+  it("cancels pending waits during cleanup", async () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    mocks.isProcessGroupAlive.mockReturnValue(true);
+    const pending = manager.waitFor(proc.id, {
+      until: "exit",
+      timeoutMs: 60_000,
+    });
+
+    manager.cleanup();
+
+    await expect(pending).resolves.toMatchObject({ reason: "cancelled" });
   });
 
   it("reports an unknown process instead of waiting forever", async () => {

@@ -77,15 +77,26 @@ describe("executeOutput", () => {
     expect(textOf(result)).not.toContain("Waiting is an action");
   });
 
-  it("reports an unchanged live process and points at wait", async () => {
+  it("reports an unchanged live process and points at yielding", async () => {
     const manager = fakeManager(read({ emptyReads: 1 }));
 
     const result = await executeOutput({ id: "proc_1" }, manager as never);
     const content = textOf(result);
 
     expect(content).toContain("no new output since your last check 4s ago");
-    expect(content).toContain('process wait id="proc_1"');
+    expect(content).toContain("will notify you automatically");
+    expect(content).toContain("end your turn");
     expect(content).not.toContain("You have checked");
+  });
+
+  it("points non-interactive runs at one blocking wait", async () => {
+    const manager = fakeManager(read({ emptyReads: 1 }));
+
+    const result = await executeOutput({ id: "proc_1" }, manager as never, {
+      exposeWait: true,
+    });
+
+    expect(textOf(result)).toContain("Use process wait once");
   });
 
   it("escalates when the agent keeps checking an unchanged process", async () => {

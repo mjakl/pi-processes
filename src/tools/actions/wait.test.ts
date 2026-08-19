@@ -64,6 +64,23 @@ describe("executeWait", () => {
     expect(textOf(result)).toContain("Recent output:");
   });
 
+  it("reports when a matched process has already exited", async () => {
+    const manager = fakeManager({
+      reason: "matched",
+      info: { ...exited, success: true, exitCode: 0 },
+      line: "ready",
+      stream: "stdout",
+    });
+
+    const result = await executeWait(
+      { id: "server", until: "output", pattern: "ready" },
+      manager as never,
+    );
+
+    expect(result.details.message).toContain("matched");
+    expect(result.details.message).toContain("completed successfully");
+  });
+
   it("reports an exit with its outcome", async () => {
     const manager = fakeManager({ reason: "exited", info: exited });
 

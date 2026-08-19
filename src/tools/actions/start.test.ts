@@ -23,7 +23,7 @@ function fakeProcess(overrides: Partial<ProcessInfo> = {}): ProcessInfo {
 }
 
 describe("executeStart", () => {
-  it("keeps the turn going and points at wait as the way to block", () => {
+  it("keeps the turn going and points at automatic completion", () => {
     const manager = {
       start: vi.fn(() => fakeProcess()),
     } as const;
@@ -36,7 +36,35 @@ describe("executeStart", () => {
 
     expect(result.details.success).toBe(true);
     expect(result.details.message).toContain("Started at: 2024-01-02 03:04:05");
-    expect(result.details.message).toContain('process wait id="proc_1"');
+    expect(result.details.message).toContain("notified automatically");
+    expect(result.details.message).toContain("end your turn");
+    expect(result).not.toHaveProperty("terminate");
+  });
+
+  it("arms one-shot readiness monitoring during start", () => {
+    const manager = {
+      start: vi.fn(() => fakeProcess()),
+    } as const;
+
+    const result = executeStart(
+      {
+        name: "server",
+        command: "pnpm dev",
+        readyPattern: "listening on",
+        readyTimeoutSeconds: 90,
+      },
+      manager as never,
+      { cwd: process.cwd() } as never,
+    );
+
+    expect(manager.start).toHaveBeenCalledWith(
+      "server",
+      "pnpm dev",
+      process.cwd(),
+      { pattern: "listening on", timeoutMs: 90_000 },
+    );
+    expect(result.details.message).toContain("Readiness monitoring is armed");
+    expect(result.details.message).toContain("90s");
   });
 
   it("byte-bounds structured process details", () => {

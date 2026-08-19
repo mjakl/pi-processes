@@ -8,15 +8,21 @@ import type { ProcessManager } from "../../manager";
 import { formatTimestamp, sanitizeLine } from "../../utils";
 import { compactProcessInfo } from "../process-details";
 
+export const DEFAULT_READY_TIMEOUT_SECONDS = 60;
+export const MAX_READY_TIMEOUT_SECONDS = 1800;
+
 interface StartParams {
   name?: string;
   command?: string;
+  readyPattern?: string;
+  readyTimeoutSeconds?: number;
 }
 
 export function executeStart(
   params: StartParams,
   manager: ProcessManager,
   ctx: ExtensionContext,
+  options: { exposeWait: boolean } = { exposeWait: false },
 ): ExecuteResult {
   if (!params.name?.trim()) {
     return {
@@ -56,7 +62,20 @@ export function executeStart(
   }
 
   try {
-    const proc = manager.start(params.name.trim(), params.command, ctx.cwd);
+    const readyPattern = params.readyPattern?.trim();
+    const readyTimeoutSeconds =
+      params.readyTimeoutSeconds ?? DEFAULT_READY_TIMEOUT_SECONDS;
+    const proc = manager.start(
+      params.name.trim(),
+      params.command,
+      ctx.cwd,
+      readyPattern
+        ? {
+            pattern: readyPattern,
+            timeoutMs: readyTimeoutSeconds * 1000,
+          }
+        : undefined,
+    );
     if (proc.pid <= 0 || proc.status !== "running") {
       const message = "Failed to start process: process exited during startup";
       return {
@@ -70,7 +89,14 @@ export function executeStart(
     }
 
     const startedAt = formatTimestamp(proc.startTime);
-    const nextStep = `To wait for it, call process wait id="${proc.id}" (until="exit", or until="output" with a pattern). You are notified automatically if it ends while you do other work.`;
+    const readyNextStep = options.exposeWait
+      ? "Use process wait once if this non-interactive run depends on the readiness or completion result."
+      : "If no independent work remains, give a short status update and end your turn; the process continues in the background.";
+    const nextStep = readyPattern
+      ? `Readiness monitoring is armed for "${sanitizeLine(readyPattern)}" for ${readyTimeoutSeconds}s. You will be notified when it matches, times out, or the process exits first. ${readyNextStep}`
+      : options.exposeWait
+        ? "Use process wait if this non-interactive run depends on completion; it is the reliable source of the result before session shutdown."
+        : "You will be notified automatically when it ends. If no independent work remains, give a short status update and end your turn; the process continues in the background.";
     const message = `Started "${sanitizeLine(proc.name)}" (${proc.id}, PID: ${proc.pid})\nStarted at: ${startedAt}\nLogs: ${proc.stdoutFile}\n${nextStep}`;
     return {
       content: [{ type: "text", text: message }],

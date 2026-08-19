@@ -1,8 +1,9 @@
-import type {
-  ExecuteResult,
-  ProcessInfo,
-  WaitOutcome,
-  WaitUntil,
+import {
+  type ExecuteResult,
+  LIVE_STATUSES,
+  type ProcessInfo,
+  type WaitOutcome,
+  type WaitUntil,
 } from "../../constants";
 import type { ProcessManager } from "../../manager";
 import { formatRuntime, formatStatus, sanitizeLine } from "../../utils";
@@ -92,7 +93,10 @@ function describe(
   const name = `"${sanitizeLine(info.name)}" (${info.id})`;
 
   if (outcome.reason === "matched") {
-    return `${name} matched "${sanitizeLine(pattern ?? "")}" after ${waitedSeconds}s on ${outcome.stream}: ${sanitizeLine(outcome.line)}`;
+    const matched = `${name} matched "${sanitizeLine(pattern ?? "")}" after ${waitedSeconds}s on ${outcome.stream}: ${sanitizeLine(outcome.line)}`;
+    return LIVE_STATUSES.has(info.status)
+      ? matched
+      : `${matched}. It ${endingDescription(info)} after ${formatRuntime(info.startTime, info.endTime)}.`;
   }
 
   if (outcome.reason === "exited") {

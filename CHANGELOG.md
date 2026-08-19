@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `process start` accepts `readyPattern` and `readyTimeoutSeconds` for one-shot, non-blocking readiness notifications.
+
+### Changed
+
+- TUI and RPC modes no longer expose blocking `process wait`; managed processes continue across turns and automatically resume the agent when they end or reach a configured readiness condition.
+- Print and JSON modes retain `process wait` so one-shot runs can depend on process completion before session shutdown.
+- Start and output guidance now tells the agent to end its turn instead of polling when no independent work remains.
+- The minimum supported `@earendil-works/pi-coding-agent` version is 0.84.2, which exposes the run mode needed for mode-specific tool contracts.
+
 ## 1.2.0
 
 ### Added

@@ -19,6 +19,8 @@ interface ActionParams {
   until?: WaitUntil;
   pattern?: string;
   timeoutSeconds?: number;
+  readyPattern?: string;
+  readyTimeoutSeconds?: number;
 }
 
 export async function executeAction(
@@ -26,16 +28,17 @@ export async function executeAction(
   manager: ProcessManager,
   ctx: ExtensionContext,
   signal?: AbortSignal,
+  options: { exposeWait: boolean } = { exposeWait: false },
 ): Promise<ExecuteResult> {
   switch (params.action) {
     case "start":
-      return executeStart(params, manager, ctx);
+      return executeStart(params, manager, ctx, options);
     case "list":
       return executeList(manager);
     case "wait":
       return executeWait(params, manager, signal);
     case "output":
-      return executeOutput(params, manager);
+      return executeOutput(params, manager, options);
     case "logs":
       return executeLogs(params, manager);
     case "kill":

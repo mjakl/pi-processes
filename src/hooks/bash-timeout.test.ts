@@ -16,8 +16,11 @@ function setupHarness(timeoutSeconds: number) {
 
   return {
     handlers,
-    call: (event: string, payload: unknown) =>
-      handlers.get(event)?.(payload as never, {}),
+    call: (
+      event: string,
+      payload: unknown,
+      mode: "tui" | "rpc" | "json" | "print" = "tui",
+    ) => handlers.get(event)?.(payload as never, { mode }),
   };
 }
 
@@ -72,6 +75,22 @@ describe("setupBashTimeout", () => {
 
     expect(result.content[0].text).toContain("Command timed out after 300");
     expect(result.content[0].text).toContain('action: "start"');
+    expect(result.content[0].text).toContain(
+      "notifies the agent automatically",
+    );
+  });
+
+  it("points non-interactive timeouts at process wait", async () => {
+    const { call } = setupHarness(300);
+
+    const result = (await call("tool_result", timedOut(300), "json")) as {
+      content: Array<{ type: string; text: string }>;
+    };
+
+    expect(result.content[0].text).toContain("use process wait once");
+    expect(result.content[0].text).not.toContain(
+      "notifies the agent automatically",
+    );
   });
 
   it("leaves other bash failures untouched", async () => {

@@ -49,6 +49,7 @@ function resolveProcessResult(
 export async function executeOutput(
   params: OutputParams,
   manager: ProcessManager,
+  options: { exposeWait: boolean } = { exposeWait: false },
 ): Promise<ExecuteResult> {
   if (!params.id) {
     return {
@@ -101,7 +102,7 @@ export async function executeOutput(
     outputParts.push("\nstderr:");
     outputParts.push(...output.stderr.map(sanitizeLine));
   }
-  const hint = waitHint(latestProc, output);
+  const hint = waitHint(latestProc, output, options.exposeWait);
   if (hint) outputParts.push("", hint);
 
   const fullText = outputParts.join("\n");
@@ -150,11 +151,12 @@ function summarize(proc: ProcessInfo, output: AgentOutputRead): string {
   return `${header}: no new output${since}`;
 }
 
-/**
- * Point at the blocking action instead of leaving repeated checks as the only
- * way to find out what a live process is doing.
- */
-function waitHint(proc: ProcessInfo, output: AgentOutputRead): string | null {
+/** Point at the event-driven path instead of encouraging another check. */
+function waitHint(
+  proc: ProcessInfo,
+  output: AgentOutputRead,
+  exposeWait: boolean,
+): string | null {
   if (!LIVE_STATUSES.has(proc.status)) return null;
   if (output.hasNewOutput) return null;
 
@@ -162,7 +164,9 @@ function waitHint(proc: ProcessInfo, output: AgentOutputRead): string | null {
     output.emptyReads > 1
       ? `You have checked ${output.emptyReads} times with nothing new. `
       : "";
-  return `[${repeated}Waiting is an action: process wait id="${proc.id}" until="exit", or until="output" with a pattern, blocks until something happens.]`;
+  return exposeWait
+    ? `[${repeated}Do not poll with process output. Use process wait once when this non-interactive run depends on completion.]`
+    : `[${repeated}Do not poll with process output. The process continues across turns and will notify you automatically; if no independent work remains, end your turn.]`;
 }
 
 /**

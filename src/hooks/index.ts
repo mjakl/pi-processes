@@ -7,6 +7,7 @@ import { setupBashTimeout } from "./bash-timeout";
 import { setupCleanupHook } from "./cleanup";
 import { setupMessageRenderer } from "./message-renderer";
 import { setupProcessEndHook } from "./process-end";
+import { setupProcessReadinessHook } from "./process-readiness";
 import { setupStatusWidget } from "./status-widget";
 
 export function setupProcessesHooks(
@@ -16,6 +17,7 @@ export function setupProcessesHooks(
 ): void {
   setupCleanupHook(pi, manager);
   setupProcessEndHook(pi, manager);
+  setupProcessReadinessHook(pi, manager);
   setupStatusWidget(pi, manager);
   setupAgentGuidance(pi);
 

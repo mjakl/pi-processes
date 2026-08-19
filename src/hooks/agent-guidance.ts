@@ -3,23 +3,26 @@
  *
  * Pi renders `promptGuidelines` into the default system prompt only. A session
  * with a custom system prompt drops them, which leaves the tool description as
- * the only place that says when to use the tool and how to wait. This hook
- * re-adds them in that case.
+ * the only place that explains event-driven continuation. This hook re-adds
+ * them in that case.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { PROMPT_GUIDELINES } from "../tools/guidelines";
-
-const GUIDANCE = PROMPT_GUIDELINES.map((guideline) => `- ${guideline}`).join(
-  "\n",
-);
+import { getPromptGuidelines } from "../tools/guidelines";
 
 export function setupAgentGuidance(pi: ExtensionAPI) {
-  pi.on("before_agent_start", async (event) => {
-    if (event.systemPrompt.includes(PROMPT_GUIDELINES[0])) return;
+  pi.on("before_agent_start", async (event, ctx) => {
+    const guidelines = getPromptGuidelines(
+      ctx.mode === "print" || ctx.mode === "json",
+    );
+    const missing = guidelines.filter(
+      (guideline) => !event.systemPrompt.includes(guideline),
+    );
+    if (missing.length === 0) return;
 
+    const guidance = missing.map((guideline) => `- ${guideline}`).join("\n");
     return {
-      systemPrompt: `${event.systemPrompt}\n\nBackground processes:\n${GUIDANCE}`,
+      systemPrompt: `${event.systemPrompt}\n\nBackground processes:\n${guidance}`,
     };
   });
 }

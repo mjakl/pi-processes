@@ -25,19 +25,24 @@ export function setupBashTimeout(pi: ExtensionAPI, timeoutSeconds: number) {
     event.input.timeout = timeoutSeconds;
   });
 
-  pi.on("tool_result", async (event) => {
+  pi.on("tool_result", async (event, ctx) => {
     if (event.toolName !== "bash" || !event.isError) return;
 
     const content = event.content;
     const last = content.at(-1);
     if (last?.type !== "text" || !TIMEOUT_MESSAGE.test(last.text)) return;
 
+    const nextStep =
+      ctx.mode === "print" || ctx.mode === "json"
+        ? "Then use process wait once so the result is available before session shutdown."
+        : "The managed process continues across turns and notifies the agent automatically.";
+
     return {
       content: [
         ...content.slice(0, -1),
         {
           ...last,
-          text: `${last.text}\n\nIf this command is meant to keep running, or needs longer, start it with the process tool instead and wait for it there - bash blocks the conversation, the process tool does not: process({ action: "start", name: "<name>", command: "<command>" })`,
+          text: `${last.text}\n\nIf this command is meant to keep running, or needs longer, start it with the process tool instead; bash blocks the conversation. ${nextStep} process({ action: "start", name: "<name>", command: "<command>" })`,
         },
       ],
     };

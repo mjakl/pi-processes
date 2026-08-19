@@ -10,16 +10,19 @@ Coding agents often need to start dev servers, watch-mode tests, log tails, port
 
 ### Features
 
-- **Agent-facing process tool** — the agent can start, wait for, inspect, kill, and clear managed processes.
-- **Blocking wait** — the agent waits for an exit, for a line of output, or for a timeout in a single call instead of checking repeatedly.
+- **Agent-facing process tool** — the agent can start, inspect, kill, and clear managed processes.
+- **Responsive by default** — in TUI and RPC modes, managed work continues across agent turns instead of blocking the conversation.
+- **Event-driven readiness and completion** — in TUI and RPC modes, `readyPattern` can wake the agent when output marks a process ready, and managed processes wake it when they end.
+- **Non-interactive wait** — print and JSON runs can block for an exit, output pattern, or timeout because those one-shot modes cannot resume after shutting down.
 - **Incremental output** — `process output` returns only what was printed since the agent last looked.
-- **Event-driven completion** — the agent is notified when a managed process exits, fails, or is externally killed.
 - **`/ps` overlay** — users can monitor processes and logs without asking the agent to poll.
 - **Status line** — a compact process status appears while managed processes exist.
 - **File-backed logs** — recent process output is retained outside the agent context window.
 - **Detached-command interception** — commands that escape the session are blocked and routed to the `process` tool, and unbounded bash calls get a timeout so a long command cannot hang the agent.
 
 ### Install
+
+Requires Pi 0.84.2 or newer.
 
 Install from npm:
 
@@ -119,21 +122,19 @@ The tool is named `process`.
 
 Actions:
 
-- `start` — start a managed process.
-- `wait` — block until the process exits, until its output matches a pattern, or until a timeout.
+- `start` — start a managed process, optionally with one-shot readiness monitoring.
+- `wait` — in print and JSON modes only, block until exit, matching output, or timeout.
 - `list` — list managed processes.
 - `output` — return the output printed since the agent last looked.
 - `logs` — return file paths for stdout, stderr, and combined logs.
 - `kill` — terminate or force-kill a process.
 - `clear` — remove finished processes from the manager.
 
-Tool-call examples:
+Interactive tool-call examples:
 
 ```text
-process start "pnpm dev" name="backend-dev"
+process start "pnpm dev" name="backend-dev" readyPattern="listening on" readyTimeoutSeconds=30
 process start "pnpm test --watch" name="tests"
-process wait id="backend-dev" until="output" pattern="listening on" timeoutSeconds=30
-process wait id="tests"
 process list
 process output id="backend-dev"
 process logs id="proc_1"
@@ -146,30 +147,32 @@ Field rules:
 
 - `start` requires `command` and `name`. A live process name must be unique; starting a second live process under the same name is rejected so lookups by name stay unambiguous.
 - A started command must remain in the foreground. Do not include `&`, `setsid`, `coproc`, detached container flags, or daemon-mode options; the manager supervises the foreground process group.
-- `wait`, `output`, `logs`, and `kill` require `id`.
-- `wait` accepts `until` (`"exit"` by default, or `"output"` with `pattern`) and `timeoutSeconds` (default 60, at most 1,800). `pattern` is matched as a case-insensitive substring, and is only valid with `until="output"`.
+- In TUI and RPC modes, `start` accepts `readyPattern` and `readyTimeoutSeconds` (default 60, at most 1,800). Matching is a case-insensitive substring across stdout and stderr. A match or timeout wakes the agent without stopping the process.
+- `output`, `logs`, and `kill` require `id`. Non-interactive `wait` also requires `id`.
+- In print and JSON modes, `wait` accepts `until` (`"exit"` by default, or `"output"` with `pattern`) and `timeoutSeconds` (default 60, at most 1,800).
 - `kill` accepts `force=true` to send `SIGKILL` instead of `SIGTERM`.
 
 ### Matching processes
 
-For `wait`, `output`, `logs`, and `kill`, `id` must be either:
+For actions that accept `id`, it must be either:
 
 - the exact process ID, such as `proc_1`
 - the exact friendly process name, such as `backend-dev`
 
 A failed lookup names the known processes, so a mistyped id does not cost an extra `list` call.
 
-### Waiting instead of polling
+### Event-driven continuation instead of polling
 
-Waiting is an action, not a loop:
+In TUI and RPC modes:
 
-1. Call `process start`; it returns immediately and the agent keeps working.
-2. Call `process wait` when the next step depends on the process — `until="exit"` for work that finishes, `until="output"` with a `pattern` for a server that has to become ready.
-3. A timeout is a normal result: wait again with a longer `timeoutSeconds`, or look at the output.
+1. Call `process start`; it returns immediately and the process continues across agent turns.
+2. Do independent work if any remains. Otherwise, report that work is running and end the turn so the user remains in control.
+3. Pi automatically resumes the agent when the process ends.
+4. For a server or watcher, set `readyPattern` on `start`. Pi resumes the agent when the pattern matches, when the readiness timeout expires, or when the process exits first.
 
-`process wait` blocks inside one tool call, so waiting costs no extra turns and no context. Output matching starts at the beginning of the retained log, so a line printed between `start` and `wait` is still found. If a process ends while the agent is doing something else, Pi sends the automatic process-end notification.
+Readiness monitoring is one-shot. A timeout expires only the monitor; it does not stop the process. A process that becomes ready and later exits produces both a readiness notification and an end notification.
 
-Repeated `process list`, `process output`, or `process logs` calls just to check whether a process is still running are an anti-pattern. `process output` returns only new output and says how long ago the last check was, so a polling loop is visible in its own results.
+Repeated `process list`, `process output`, or `process logs` calls just to check progress are an anti-pattern. Use `output` for one-off inspection or diagnosis. In print and JSON modes, where the session cannot resume after exit, use the available `process wait` action once when completion is required.
 
 ### Logs and output
 
