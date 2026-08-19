@@ -147,7 +147,7 @@ Field rules:
 
 - `start` requires `command` and `name`. A live process name must be unique; starting a second live process under the same name is rejected so lookups by name stay unambiguous.
 - A started command must remain in the foreground. Do not include `&`, `setsid`, `coproc`, detached container flags, or daemon-mode options; the manager supervises the foreground process group.
-- In TUI and RPC modes, `start` accepts `readyPattern` and `readyTimeoutSeconds` (default 60, at most 1,800). Matching is a case-insensitive substring across stdout and stderr. A match or timeout wakes the agent without stopping the process.
+- In TUI and RPC modes, `start` accepts `readyPattern` and optional `readyTimeoutSeconds` (default 60, at most 1,800). `readyTimeoutSeconds` requires `readyPattern`. Matching is a case-insensitive substring across stdout and stderr. A match or timeout wakes the agent without stopping the process.
 - `output`, `logs`, and `kill` require `id`. Non-interactive `wait` also requires `id`.
 - In print and JSON modes, `wait` accepts `until` (`"exit"` by default, or `"output"` with `pattern`) and `timeoutSeconds` (default 60, at most 1,800).
 - `kill` accepts `force=true` to send `SIGKILL` instead of `SIGTERM`.
