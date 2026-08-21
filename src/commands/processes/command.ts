@@ -16,7 +16,7 @@ export function registerPsCommand(
   pi.registerCommand("ps", {
     description: "Open the process overlay",
     handler: async (_args, ctx) => {
-      if (!ctx.hasUI) {
+      if (ctx.mode !== "tui" || !ctx.hasUI) {
         return;
       }
 

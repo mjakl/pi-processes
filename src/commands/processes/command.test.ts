@@ -54,6 +54,7 @@ describe("registerPsCommand", () => {
 
     registerPsCommand(pi as never, manager as never);
     const commandPromise = handler?.("", {
+      mode: "tui",
       hasUI: true,
       ui: { custom, notify: vi.fn() },
     });
@@ -63,5 +64,31 @@ describe("registerPsCommand", () => {
     await commandPromise;
     expect(vi.getTimerCount()).toBe(0);
     expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    "rpc",
+    "print",
+    "json",
+  ])("does not open the overlay in %s mode", async (mode) => {
+    let handler: ((args: string, ctx: unknown) => Promise<void>) | undefined;
+    const pi = {
+      on: vi.fn(),
+      registerCommand: vi.fn(
+        (_name: string, command: { handler: typeof handler }) => {
+          handler = command.handler;
+        },
+      ),
+    };
+    const custom = vi.fn();
+
+    registerPsCommand(pi as never, {} as never);
+    await handler?.("", {
+      mode,
+      hasUI: true,
+      ui: { custom, notify: vi.fn() },
+    });
+
+    expect(custom).not.toHaveBeenCalled();
   });
 });

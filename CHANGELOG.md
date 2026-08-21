@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- The `/ps` process overlay now opens only in TUI mode; invoking `/ps` in RPC, print, or JSON mode returns without attempting to use the custom UI.
+
 ## 2.0.0
 
 ### Added
