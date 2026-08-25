@@ -20,10 +20,10 @@ function processInfo(status: ProcessInfo["status"]): ProcessInfo {
 }
 
 describe("setupStatusWidget", () => {
-  it("uses RPC-compatible string lines and clears an empty widget", async () => {
+  function setup(initialProcesses: ProcessInfo[], mode: "tui" | "rpc") {
     let sessionStart: ((event: unknown, ctx: unknown) => void) | undefined;
     let managerListener: (() => void) | undefined;
-    let processes = [processInfo("running"), processInfo("exited")];
+    let processes = initialProcesses;
     const setWidget = vi.fn();
     const pi = {
       on: vi.fn(
@@ -41,18 +41,52 @@ describe("setupStatusWidget", () => {
     };
 
     setupStatusWidget(pi as never, manager as never);
-    await sessionStart?.({}, { hasUI: true, ui: { setWidget } });
+    sessionStart?.({}, { mode, hasUI: true, ui: { setWidget } });
+
+    return {
+      setProcesses(next: ProcessInfo[]) {
+        processes = next;
+        managerListener?.();
+      },
+      setWidget,
+    };
+  }
+
+  it("keeps finished process status visible in TUI mode", () => {
+    const { setWidget } = setup([processInfo("exited")], "tui");
 
     expect(setWidget).toHaveBeenLastCalledWith(
+      "processes-status",
+      ["processes: 0 active | 1 finished"],
+      { placement: "belowEditor" },
+    );
+  });
+
+  it("shows live RPC status and clears it when only finished records remain", () => {
+    const state = setup([processInfo("running"), processInfo("exited")], "rpc");
+
+    expect(state.setWidget).toHaveBeenLastCalledWith(
       "processes-status",
       ["processes: 1 active | 1 finished"],
       { placement: "belowEditor" },
     );
 
-    processes = [];
-    managerListener?.();
-    expect(setWidget).toHaveBeenLastCalledWith("processes-status", undefined, {
-      placement: "belowEditor",
-    });
+    state.setProcesses([processInfo("exited")]);
+    expect(state.setWidget).toHaveBeenLastCalledWith(
+      "processes-status",
+      undefined,
+      { placement: "belowEditor" },
+    );
+  });
+
+  it("clears an empty TUI widget", () => {
+    const state = setup([processInfo("running")], "tui");
+
+    state.setProcesses([]);
+    expect(state.setWidget).toHaveBeenLastCalledWith(
+      "processes-status",
+      undefined,
+      { placement: "belowEditor" },
+    );
   });
 });

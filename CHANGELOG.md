@@ -5,6 +5,7 @@
 ### Fixed
 
 - The `/ps` process overlay now opens only in TUI mode; invoking `/ps` in RPC, print, or JSON mode returns without attempting to use the custom UI.
+- The RPC status widget now clears when no process is active instead of remaining visible solely because finished records are retained. TUI behavior is unchanged.
 
 ## 2.0.0
 

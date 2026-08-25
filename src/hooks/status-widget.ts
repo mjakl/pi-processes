@@ -7,7 +7,10 @@ import type { ProcessManager } from "../manager";
 
 const STATUS_WIDGET_ID = "processes-status";
 
-function renderStatusWidgetLine(processes: ProcessInfo[]): string | null {
+function renderStatusWidgetLine(
+  processes: ProcessInfo[],
+  mode: ExtensionContext["mode"],
+): string | null {
   if (processes.length === 0) return null;
 
   const activeCount = processes.filter(
@@ -17,6 +20,8 @@ function renderStatusWidgetLine(processes: ProcessInfo[]): string | null {
       process.status === "terminate_timeout",
   ).length;
   const finishedCount = processes.length - activeCount;
+
+  if (mode === "rpc" && activeCount === 0) return null;
 
   return `processes: ${activeCount} active | ${finishedCount} finished`;
 }
@@ -30,7 +35,7 @@ export function setupStatusWidget(
   const updateWidget = (): void => {
     if (!latestContext?.hasUI) return;
 
-    const line = renderStatusWidgetLine(manager.list());
+    const line = renderStatusWidgetLine(manager.list(), latestContext.mode);
     latestContext.ui.setWidget(STATUS_WIDGET_ID, line ? [line] : undefined, {
       placement: "belowEditor",
     });
