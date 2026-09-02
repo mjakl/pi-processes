@@ -7,7 +7,9 @@ interface CapturedTool {
   executionMode: string;
   promptGuidelines: string[];
   parameters: {
-    properties: { action: { type: string; enum: string[]; anyOf?: unknown } };
+    properties: Record<string, unknown> & {
+      action: { type: string; enum: string[]; anyOf?: unknown };
+    };
   };
   execute: (
     id: string,
@@ -69,11 +71,62 @@ describe("process tool contract", () => {
     expect("until" in noninteractive.parameters.properties).toBe(true);
     expect("readyPattern" in interactive.parameters.properties).toBe(true);
     expect("readyPattern" in noninteractive.parameters.properties).toBe(false);
+    expect("completionSummaryFile" in interactive.parameters.properties).toBe(
+      true,
+    );
+    expect(
+      "completionSummaryFile" in noninteractive.parameters.properties,
+    ).toBe(false);
     expect(interactive.description).not.toContain("process wait");
     expect(interactive.promptGuidelines.join("\n")).not.toContain(
       "process wait",
     );
     expect(noninteractive.description).toContain("wait:");
+  });
+
+  it("rejects completion summaries outside interactive start", async () => {
+    const interactiveManager = {
+      start: vi.fn(() => ({
+        id: "proc_1",
+        name: "tests",
+        pid: 123,
+        command: "pnpm test",
+        cwd: process.cwd(),
+        startTime: Date.now(),
+        endTime: null,
+        status: "running",
+        exitCode: null,
+        success: null,
+        stdoutFile: "/tmp/stdout.log",
+        stderrFile: "/tmp/stderr.log",
+      })),
+    } as unknown as ProcessManager;
+    const interactive = captureTool(interactiveManager);
+    const noninteractive = captureTool({ start: vi.fn() } as never, true);
+    const params = {
+      action: "start",
+      name: "tests",
+      command: "pnpm test",
+      completionSummaryFile: "summary.txt",
+    };
+
+    await interactive.execute("call", params, undefined, undefined, {
+      cwd: "/work/project",
+    });
+    expect(interactiveManager.start).toHaveBeenCalledWith(
+      "tests",
+      "pnpm test",
+      "/work/project",
+      undefined,
+      "/work/project/summary.txt",
+    );
+    await expect(
+      noninteractive.execute("call", params, undefined, undefined, {
+        cwd: "/work/project",
+      }),
+    ).rejects.toThrow(
+      'Parameter "completionSummaryFile" is not valid for start',
+    );
   });
 
   it("rejects blank required and action-irrelevant parameters", async () => {
@@ -205,6 +258,7 @@ describe("process tool contract", () => {
       "pnpm dev",
       process.cwd(),
       { pattern: "listening on", timeoutMs: 30_000 },
+      undefined,
     );
   });
 

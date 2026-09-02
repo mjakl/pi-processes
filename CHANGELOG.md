@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- In TUI and RPC modes, `process start` accepts `completionSummaryFile`. The process owns the file; the automatic end notification reads it once after shutdown and uses its sanitized UTF-8 content instead of recent output.
+
 ### Fixed
 
 - The `/ps` process overlay now opens only in TUI mode; invoking `/ps` in RPC, print, or JSON mode returns without attempting to use the custom UI.
