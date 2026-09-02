@@ -52,6 +52,7 @@ interface ManagedProcess extends ProcessInfo {
   lastSignalSent: NodeJS.Signals | null;
   combinedFile: string;
   triggerAgentTurnOnEnd: boolean;
+  completionSummaryFile: string | null;
   readiness: ReadinessWatch | null;
   readinessPatternAtEnd: string | null;
   activeWaits: number;
@@ -148,6 +149,9 @@ export class ProcessManager {
         triggerAgentTurn:
           managed.triggerAgentTurnOnEnd && managed.activeWaits === 0,
         ...(readinessPattern ? { readinessPattern } : {}),
+        ...(managed.completionSummaryFile
+          ? { completionSummaryFile: managed.completionSummaryFile }
+          : {}),
       });
     }
 
@@ -235,6 +239,7 @@ export class ProcessManager {
     command: string,
     cwd: string,
     readiness?: { pattern: string; timeoutMs: number },
+    completionSummaryFile?: string,
   ): ProcessInfo {
     if (this.processes.size >= MAX_RETAINED_PROCESSES) {
       throw new Error(
@@ -335,6 +340,7 @@ export class ProcessManager {
       lastSignalSent: null,
       combinedFile,
       triggerAgentTurnOnEnd: true,
+      completionSummaryFile: completionSummaryFile ?? null,
       readiness: readiness
         ? {
             pattern: readiness.pattern,

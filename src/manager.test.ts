@@ -720,6 +720,37 @@ describe("ProcessManager", () => {
     });
   });
 
+  it("keeps completion summary metadata private until the ended event", async () => {
+    const events: ManagerEvent[] = [];
+    manager.onEvent((event) => events.push(event));
+    const proc = manager.start(
+      "tests",
+      "pnpm test",
+      process.cwd(),
+      undefined,
+      "/tmp/completion-summary.txt",
+    );
+
+    expect(proc).not.toHaveProperty("completionSummaryFile");
+    expect(manager.get(proc.id)).not.toHaveProperty("completionSummaryFile");
+    expect(manager.list()[0]).not.toHaveProperty("completionSummaryFile");
+
+    children[0].emit("close", 0, null);
+    expect(events.some((event) => event.type === "process_ended")).toBe(false);
+    await manager.getOutput(proc.id);
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "process_ended",
+        completionSummaryFile: "/tmp/completion-summary.txt",
+        info: expect.not.objectContaining({
+          completionSummaryFile: expect.anything(),
+        }),
+      }),
+    );
+  });
+
   it("emits a one-shot readiness event for matching output", async () => {
     const events: ManagerEvent[] = [];
     manager.onEvent((event) => events.push(event));

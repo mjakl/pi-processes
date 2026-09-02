@@ -21,6 +21,7 @@ interface ActionParams {
   timeoutSeconds?: number;
   readyPattern?: string;
   readyTimeoutSeconds?: number;
+  completionSummaryFile?: string;
 }
 
 export async function executeAction(

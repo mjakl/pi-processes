@@ -37,6 +37,7 @@ export type ManagerEvent =
       info: ProcessInfo;
       triggerAgentTurn: boolean;
       readinessPattern?: string;
+      completionSummaryFile?: string;
     }
   | {
       type: "process_ready";

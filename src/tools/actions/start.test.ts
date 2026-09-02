@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { ProcessInfo } from "../../constants";
 import { executeStart } from "./start";
@@ -62,9 +63,37 @@ describe("executeStart", () => {
       "pnpm dev",
       process.cwd(),
       { pattern: "listening on", timeoutMs: 90_000 },
+      undefined,
     );
     expect(result.details.message).toContain("Readiness monitoring is armed");
     expect(result.details.message).toContain("90s");
+  });
+
+  it.each([
+    ["reports/summary.txt", resolve("/work/project", "reports/summary.txt")],
+    ["/tmp/../tmp/process-summary.txt", "/tmp/../tmp/process-summary.txt"],
+  ])("forwards completion summary path %s as %s", (input, expected) => {
+    const manager = {
+      start: vi.fn(() => fakeProcess()),
+    } as const;
+
+    executeStart(
+      {
+        name: "tests",
+        command: "pnpm test",
+        completionSummaryFile: input,
+      },
+      manager as never,
+      { cwd: "/work/project" } as never,
+    );
+
+    expect(manager.start).toHaveBeenCalledWith(
+      "tests",
+      "pnpm test",
+      "/work/project",
+      undefined,
+      expected,
+    );
   });
 
   it("byte-bounds structured process details", () => {

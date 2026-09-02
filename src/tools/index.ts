@@ -57,12 +57,19 @@ interface ProcessesParamsType {
   timeoutSeconds?: number;
   readyPattern?: string;
   readyTimeoutSeconds?: number;
+  completionSummaryFile?: string;
 }
 
 type OptionalParam = Exclude<keyof ProcessesParamsType, "action">;
 
 const ALLOWED_PARAMS: Record<ProcessAction, ReadonlySet<OptionalParam>> = {
-  start: new Set(["command", "name", "readyPattern", "readyTimeoutSeconds"]),
+  start: new Set([
+    "command",
+    "name",
+    "readyPattern",
+    "readyTimeoutSeconds",
+    "completionSummaryFile",
+  ]),
   wait: new Set(["id", "until", "pattern", "timeoutSeconds"]),
   list: new Set(),
   output: new Set(["id"]),
@@ -80,6 +87,7 @@ const OPTIONAL_PARAMS: OptionalParam[] = [
   "timeoutSeconds",
   "readyPattern",
   "readyTimeoutSeconds",
+  "completionSummaryFile",
 ];
 
 function createProcessesParams(exposeWait: boolean) {
@@ -165,6 +173,13 @@ function createProcessesParams(exposeWait: boolean) {
                 maximum: MAX_READY_TIMEOUT_SECONDS,
               }),
             ),
+            completionSummaryFile: Type.Optional(
+              Type.String({
+                description:
+                  "For start only. Read this caller-owned UTF-8 file once when the process ends and use it in the automatic completion notification. Relative paths resolve from the process working directory.",
+                minLength: 1,
+              }),
+            ),
           }
         : {}),
     },
@@ -209,6 +224,7 @@ function validateParams(
   validateOptionalText(params.id, "id", 120);
   validateOptionalText(params.pattern, "pattern", 200);
   validateOptionalText(params.readyPattern, "readyPattern", 200);
+  validateOptionalString(params.completionSummaryFile, "completionSummaryFile");
   if (params.force !== undefined && typeof params.force !== "boolean") {
     throw new Error('Parameter "force" must be a boolean');
   }
@@ -227,6 +243,9 @@ function validateParams(
     requireText(params.command, "command");
     if (params.readyPattern !== undefined) {
       requireText(params.readyPattern, "readyPattern");
+    }
+    if (params.completionSummaryFile !== undefined) {
+      requireText(params.completionSummaryFile, "completionSummaryFile");
     }
     if (params.readyTimeoutSeconds !== undefined) {
       requireText(params.readyPattern, "readyPattern");
@@ -280,6 +299,12 @@ function validateOptionalText(
   }
 }
 
+function validateOptionalString(value: unknown, field: string): void {
+  if (value !== undefined && typeof value !== "string") {
+    throw new Error(`Parameter "${field}" must be a string`);
+  }
+}
+
 function requireText(value: string | undefined, field: string): void {
   if (!value?.trim()) {
     throw new Error(`Missing required parameter: ${field}`);
@@ -311,7 +336,7 @@ export function setupProcessesTools(
     : "For a server or watcher, pass readyPattern to start for a one-shot, non-blocking notification when a specific output marker appears.";
   const startOptions = exposeWait
     ? ""
-    : ", with optional readyPattern and readyTimeoutSeconds";
+    : ", with optional readyPattern, readyTimeoutSeconds, and completionSummaryFile";
   const continuationDescription = exposeWait
     ? "Use wait once when the run depends on process completion."
     : "If no independent work remains after start, give a short status update and end your turn so the user stays in control.";

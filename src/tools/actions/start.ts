@@ -1,3 +1,4 @@
+import { isAbsolute, resolve } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ExecuteResult } from "../../constants";
 import {
@@ -16,6 +17,7 @@ interface StartParams {
   command?: string;
   readyPattern?: string;
   readyTimeoutSeconds?: number;
+  completionSummaryFile?: string;
 }
 
 export function executeStart(
@@ -74,6 +76,11 @@ export function executeStart(
             pattern: readyPattern,
             timeoutMs: readyTimeoutSeconds * 1000,
           }
+        : undefined,
+      params.completionSummaryFile
+        ? isAbsolute(params.completionSummaryFile)
+          ? params.completionSummaryFile
+          : resolve(ctx.cwd, params.completionSummaryFile)
         : undefined,
     );
     if (proc.pid <= 0 || proc.status !== "running") {

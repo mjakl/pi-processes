@@ -1,5 +1,11 @@
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
+import { setupProcessEndHook } from "./hooks/process-end";
 import { ProcessManager } from "./manager";
+import { executeStart } from "./tools/actions/start";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -48,6 +54,51 @@ describe("ProcessManager (real processes)", () => {
       expect(timedOut).toMatchObject({ reason: "exited" });
     } finally {
       manager.cleanup();
+    }
+  }, 20000);
+
+  it("reads a relative completion summary after descendants and logs close", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "pi-process-summary-integration-"));
+    const manager = new ProcessManager();
+    try {
+      const wrapper = join(cwd, "write-summary.sh");
+      writeFileSync(
+        wrapper,
+        [
+          "#!/usr/bin/env bash",
+          "printf 'too early\\n' > summary.txt",
+          "(sleep 0.3; printf 'integration summary\\n' > summary.txt) &",
+          "exit 0",
+          "",
+        ].join("\n"),
+      );
+      chmodSync(wrapper, 0o700);
+      const notification = new Promise<string>((resolve) => {
+        setupProcessEndHook(
+          {
+            sendMessage: (message: { content: string }) =>
+              resolve(message.content),
+          } as unknown as ExtensionAPI,
+          manager,
+        );
+      });
+      const started = executeStart(
+        {
+          name: "summary-probe",
+          command: "./write-summary.sh",
+          completionSummaryFile: "summary.txt",
+        },
+        manager,
+        { cwd } as never,
+      );
+      expect(started.details.success).toBe(true);
+
+      const content = await notification;
+      expect(content).toContain("Completion summary:\nintegration summary");
+      expect(content).not.toContain("too early");
+    } finally {
+      manager.cleanup();
+      rmSync(cwd, { recursive: true, force: true });
     }
   }, 20000);
 

@@ -135,6 +135,7 @@ Interactive tool-call examples:
 ```text
 process start "pnpm dev" name="backend-dev" readyPattern="listening on" readyTimeoutSeconds=30
 process start "pnpm test --watch" name="tests"
+process start "pnpm test" name="test-run" completionSummaryFile="artifacts/test-summary.txt"
 process list
 process output id="backend-dev"
 process logs id="proc_1"
@@ -148,6 +149,7 @@ Field rules:
 - `start` requires `command` and `name`. A live process name must be unique; starting a second live process under the same name is rejected so lookups by name stay unambiguous.
 - A started command must remain in the foreground. Do not include `&`, `setsid`, `coproc`, detached container flags, or daemon-mode options; the manager supervises the foreground process group.
 - In TUI and RPC modes, `start` accepts `readyPattern` and optional `readyTimeoutSeconds` (default 60, at most 1,800). `readyTimeoutSeconds` requires `readyPattern`. Matching is a case-insensitive substring across stdout and stderr. A match or timeout wakes the agent without stopping the process.
+- In TUI and RPC modes, `start` also accepts `completionSummaryFile`. Relative paths resolve from the process working directory. The process must create and manage this UTF-8 file. When the process ends, Pi reads the file once and uses up to 128 sanitized lines in place of recent output. If the file is unavailable or invalid, the notification says so and falls back to recent output.
 - `output`, `logs`, and `kill` require `id`. Non-interactive `wait` also requires `id`.
 - In print and JSON modes, `wait` accepts `until` (`"exit"` by default, or `"output"` with `pattern`) and `timeoutSeconds` (default 60, at most 1,800).
 - `kill` accepts `force=true` to send `SIGKILL` instead of `SIGTERM`.
