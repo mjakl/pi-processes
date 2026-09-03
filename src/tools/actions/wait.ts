@@ -2,6 +2,7 @@ import {
   type ExecuteResult,
   LIVE_STATUSES,
   type ProcessInfo,
+  type ProcessOutputLine,
   type WaitOutcome,
   type WaitUntil,
 } from "../../constants";
@@ -14,8 +15,6 @@ import {
 
 export const DEFAULT_WAIT_SECONDS = 60;
 export const MAX_WAIT_SECONDS = 1800;
-
-const TAIL_LINES = 20;
 
 interface WaitParams {
   id?: string;
@@ -62,7 +61,7 @@ export async function executeWait(
   }
 
   const waitedSeconds = Math.round((Date.now() - startedAt) / 1000);
-  const tail = await recentOutput(manager, resolved.info.id);
+  const tail = recentOutput(outcome.recentOutput);
   const summary = describe(outcome, until, params.pattern, waitedSeconds);
   const lines = [summary, ...tail];
 
@@ -120,11 +119,7 @@ function endingDescription(info: ProcessInfo): string {
     : `failed with exit code ${info.exitCode ?? "?"}`;
 }
 
-async function recentOutput(
-  manager: ProcessManager,
-  id: string,
-): Promise<string[]> {
-  const combined = await manager.getCombinedOutput(id, TAIL_LINES);
+function recentOutput(combined: ProcessOutputLine[] | null): string[] {
   if (combined === null) {
     return [
       "",

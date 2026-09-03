@@ -181,6 +181,7 @@ describe("process tool contract", () => {
           exitCode: null,
           success: null,
         },
+        recentOutput: [],
       })),
       getCombinedOutput: vi.fn(async () => []),
     } as unknown as ProcessManager;

@@ -10,6 +10,7 @@ import {
   LIVE_STATUSES,
   type ManagerEvent,
   type ProcessInfo,
+  type ProcessOutputLine,
   type ProcessStatus,
   type ResolveProcessResult,
   type WaitOutcome,
@@ -56,6 +57,7 @@ interface ManagedProcess extends ProcessInfo {
   readiness: ReadinessWatch | null;
   readinessPatternAtEnd: string | null;
   activeWaits: number;
+  retired: boolean;
   /** What the agent has already been shown, so later reads only return new output. */
   agentCursors: StreamCursors;
   agentReadAt: number | null;
@@ -83,6 +85,7 @@ const LOG_FILE_RETAIN_BYTES = 4 * 1024 * 1024;
 const LOG_READ_MAX_BYTES = 512 * 1024;
 const CHILD_CLOSE_WAIT_MS = 500;
 const WAIT_POLL_MS = 200;
+const RECENT_OUTPUT_LINES = 20;
 const READINESS_TAIL_CHARS = 2000;
 const LOG_FILE_OPTIONS = {
   maxBytes: LOG_FILE_MAX_BYTES,
@@ -135,24 +138,34 @@ export class ProcessManager {
     if (managed.status === next) return;
     managed.status = next;
 
-    this.emit({ type: "processes_changed" });
-
+    let endedEvent: Extract<ManagerEvent, { type: "process_ended" }> | null =
+      null;
     if (next === "exited" || next === "killed") {
       const readinessPattern =
         managed.readinessPatternAtEnd ?? this.cancelReadiness(managed);
       managed.readinessPatternAtEnd = null;
-      for (const waiter of managed.endWaiters) waiter();
-      managed.endWaiters.clear();
-      this.emit({
+      const triggerAgentTurn =
+        managed.triggerAgentTurnOnEnd && managed.activeWaits === 0;
+      endedEvent = {
         type: "process_ended",
         info: this.toProcessInfo(managed),
-        triggerAgentTurn:
-          managed.triggerAgentTurnOnEnd && managed.activeWaits === 0,
+        triggerAgentTurn,
+        recentOutput: triggerAgentTurn
+          ? this.readCombinedOutput(managed, RECENT_OUTPUT_LINES)
+          : null,
         ...(readinessPattern ? { readinessPattern } : {}),
         ...(managed.completionSummaryFile
           ? { completionSummaryFile: managed.completionSummaryFile }
           : {}),
-      });
+      };
+    }
+
+    this.emit({ type: "processes_changed" });
+
+    if (endedEvent) {
+      for (const waiter of managed.endWaiters) waiter();
+      managed.endWaiters.clear();
+      this.emit(endedEvent);
     }
 
     this.ensureWatcherRunning();
@@ -234,6 +247,21 @@ export class ProcessManager {
     }
   }
 
+  private removeManagedProcessLogs(managed: ManagedProcess): void {
+    void managed.closeLogs().catch(() => {});
+    this.removeProcessLogFiles(
+      managed.stdoutFile,
+      managed.stderrFile,
+      managed.combinedFile,
+    );
+  }
+
+  private retire(managed: ManagedProcess): void {
+    this.processes.delete(managed.id);
+    managed.retired = true;
+    if (managed.activeWaits === 0) this.removeManagedProcessLogs(managed);
+  }
+
   start(
     name: string,
     command: string,
@@ -241,11 +269,6 @@ export class ProcessManager {
     readiness?: { pattern: string; timeoutMs: number },
     completionSummaryFile?: string,
   ): ProcessInfo {
-    if (this.processes.size >= MAX_RETAINED_PROCESSES) {
-      throw new Error(
-        `Process record limit reached (${MAX_RETAINED_PROCESSES}); clear finished processes before starting another`,
-      );
-    }
     const live = [...this.processes.values()].filter((process) =>
       LIVE_STATUSES.has(process.status),
     );
@@ -263,6 +286,20 @@ export class ProcessManager {
       throw new Error(
         `A live process is already named "${name}" (${nameClash.id}); stop it first or choose a different name`,
       );
+    }
+
+    const recordsToEvict: ManagedProcess[] = [];
+    const recordsNeeded = this.processes.size - MAX_RETAINED_PROCESSES + 1;
+    if (recordsNeeded > 0) {
+      for (const managed of this.processes.values()) {
+        if (!LIVE_STATUSES.has(managed.status)) recordsToEvict.push(managed);
+        if (recordsToEvict.length === recordsNeeded) break;
+      }
+      if (recordsToEvict.length < recordsNeeded) {
+        throw new Error(
+          `Process record limit reached (${MAX_RETAINED_PROCESSES}); stop a process before starting another`,
+        );
+      }
     }
 
     const id = `proc_${++this.counter}`;
@@ -355,6 +392,7 @@ export class ProcessManager {
         : null,
       readinessPatternAtEnd: null,
       activeWaits: 0,
+      retired: false,
       agentCursors: {
         stdout: { offset: 0, end: 0 },
         stderr: { offset: 0, end: 0 },
@@ -476,6 +514,7 @@ export class ProcessManager {
 
     trackingStarted = true;
     child.unref();
+    for (const process of recordsToEvict) this.retire(process);
     this.processes.set(id, managed);
     this.armReadiness(managed);
     this.emit({ type: "process_started", info: this.toProcessInfo(managed) });
@@ -736,6 +775,8 @@ export class ProcessManager {
     try {
       const deadline = Date.now() + opts.timeoutMs;
       const info = () => this.toProcessInfo(managed);
+      const recentOutput = () =>
+        this.readCombinedOutputAfterFlush(managed, RECENT_OUTPUT_LINES);
       const abortSignal = opts.abortSignal
         ? AbortSignal.any([
             opts.abortSignal,
@@ -745,7 +786,11 @@ export class ProcessManager {
 
       if (opts.until === "exit") {
         if (!LIVE_STATUSES.has(managed.status)) {
-          return { reason: "exited", info: info() };
+          return {
+            reason: "exited",
+            info: info(),
+            recentOutput: await recentOutput(),
+          };
         }
         if (abortSignal.aborted) {
           return { reason: "cancelled", info: info() };
@@ -757,9 +802,11 @@ export class ProcessManager {
           abortSignal,
         );
         if (result === "aborted") return { reason: "cancelled", info: info() };
-        return LIVE_STATUSES.has(managed.status)
-          ? { reason: "timeout", info: info() }
-          : { reason: "exited", info: info() };
+        return {
+          reason: LIVE_STATUSES.has(managed.status) ? "timeout" : "exited",
+          info: info(),
+          recentOutput: await recentOutput(),
+        };
       }
 
       const pattern = opts.pattern ?? "";
@@ -776,17 +823,28 @@ export class ProcessManager {
             info: info(),
             line: match.line,
             stream: match.stream,
+            recentOutput: await recentOutput(),
           };
         }
         if (!LIVE_STATUSES.has(managed.status)) {
-          return { reason: "exited", info: info() };
+          return {
+            reason: "exited",
+            info: info(),
+            recentOutput: await recentOutput(),
+          };
         }
         if (abortSignal.aborted) {
           return { reason: "cancelled", info: info() };
         }
 
         const remaining = deadline - Date.now();
-        if (remaining <= 0) return { reason: "timeout", info: info() };
+        if (remaining <= 0) {
+          return {
+            reason: "timeout",
+            info: info(),
+            recentOutput: await recentOutput(),
+          };
+        }
 
         const result = await this.waitForGracePeriod(
           managed,
@@ -797,6 +855,9 @@ export class ProcessManager {
       }
     } finally {
       managed.activeWaits--;
+      if (managed.retired && managed.activeWaits === 0) {
+        this.removeManagedProcessLogs(managed);
+      }
     }
   }
 
@@ -839,19 +900,10 @@ export class ProcessManager {
     return undefined;
   }
 
-  async getCombinedOutput(
-    id: string,
-    tailLines = 100,
-  ): Promise<{ type: "stdout" | "stderr"; text: string }[] | null> {
-    const managed = this.processes.get(id);
-    if (!managed) return null;
-
-    try {
-      await managed.flushLogs();
-    } catch {
-      managed.logError = true;
-      return null;
-    }
+  private readCombinedOutput(
+    managed: ManagedProcess,
+    tailLines: number,
+  ): ProcessOutputLine[] | null {
     if (managed.logError) return null;
     const rawLines = this.readTailLines(managed.combinedFile, tailLines);
     if (!rawLines) {
@@ -868,6 +920,29 @@ export class ProcessManager {
         text: line.startsWith("1:") ? line.slice(2) : line,
       };
     });
+  }
+
+  private async readCombinedOutputAfterFlush(
+    managed: ManagedProcess,
+    tailLines: number,
+  ): Promise<ProcessOutputLine[] | null> {
+    try {
+      await managed.flushLogs();
+    } catch {
+      managed.logError = true;
+      return null;
+    }
+    return this.readCombinedOutput(managed, tailLines);
+  }
+
+  async getCombinedOutput(
+    id: string,
+    tailLines = 100,
+  ): Promise<ProcessOutputLine[] | null> {
+    const managed = this.processes.get(id);
+    return managed
+      ? this.readCombinedOutputAfterFlush(managed, tailLines)
+      : null;
   }
 
   getLogFiles(
@@ -1137,21 +1212,12 @@ export class ProcessManager {
 
   clearFinished(): number {
     let cleared = 0;
-    for (const [id, managed] of this.processes) {
+    for (const managed of this.processes.values()) {
       if (LIVE_STATUSES.has(managed.status)) {
         continue;
       }
 
-      void managed.closeLogs().catch(() => {});
-      try {
-        rmSync(managed.stdoutFile, { force: true });
-        rmSync(managed.stderrFile, { force: true });
-        rmSync(managed.combinedFile, { force: true });
-      } catch {
-        // Ignore
-      }
-
-      this.processes.delete(id);
+      this.retire(managed);
       cleared++;
     }
 

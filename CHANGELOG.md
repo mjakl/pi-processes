@@ -6,6 +6,10 @@
 
 - In TUI and RPC modes, `process start` accepts `completionSummaryFile`. The process owns the file; the automatic end notification reads it once after shutdown and uses its sanitized UTF-8 content instead of recent output.
 
+### Changed
+
+- Starting a process at the 32-record limit now evicts the oldest finished record and its logs instead of rejecting the start. Live records are never evicted.
+
 ### Fixed
 
 - The `/ps` process overlay now opens only in TUI mode; invoking `/ps` in RPC, print, or JSON mode returns without attempting to use the custom UI.
