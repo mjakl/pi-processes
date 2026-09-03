@@ -443,17 +443,96 @@ describe("ProcessManager", () => {
     expect(children).toHaveLength(16);
   });
 
-  it("bounds retained process records", async () => {
+  it("evicts the oldest finished record when a start reaches the retained limit", async () => {
+    const live = manager.start("live", "sleep 60", process.cwd());
+    const oldestFinished = manager.start(
+      "oldest-finished",
+      "true",
+      process.cwd(),
+    );
+    const laterFinished = manager.start(
+      "later-finished",
+      "true",
+      process.cwd(),
+    );
+
+    children[2].emit("close", 0, null);
+    await manager.getOutput(laterFinished.id);
+    await vi.advanceTimersByTimeAsync(10);
+    children[1].emit("close", 0, null);
+    await manager.getOutput(oldestFinished.id);
+
+    for (let index = 3; index < 32; index++) {
+      const proc = manager.start(`process-${index}`, "true", process.cwd());
+      children[index].emit("close", 0, null);
+      await manager.getOutput(proc.id);
+    }
+
+    const evictedLogs = manager.getLogFiles(oldestFinished.id);
+    expect(evictedLogs).not.toBeNull();
+    const replacement = manager.start("replacement", "true", process.cwd());
+
+    expect(manager.list()).toHaveLength(32);
+    expect(manager.get(live.id)?.status).toBe("running");
+    expect(manager.get(oldestFinished.id)).toBeNull();
+    expect(manager.get(laterFinished.id)?.status).toBe("exited");
+    expect(manager.get(replacement.id)?.status).toBe("running");
+    expect(
+      Object.values(evictedLogs ?? {}).every((path) => !existsSync(path)),
+    ).toBe(true);
+    expect(children).toHaveLength(33);
+  });
+
+  it("preserves retained records and logs when a start fails at capacity", async () => {
     for (let index = 0; index < 32; index++) {
       const proc = manager.start(`process-${index}`, "true", process.cwd());
       children[index].emit("close", 0, null);
       await manager.getOutput(proc.id);
     }
 
-    expect(() => manager.start("one-too-many", "true", process.cwd())).toThrow(
-      "Process record limit reached (32)",
+    const before = manager.list();
+    const logDir = dirname(before[0].stdoutFile);
+    const filesBefore = readdirSync(logDir).sort();
+    mocks.spawnCommand.mockImplementationOnce(() => {
+      throw new Error("shell resolution failed");
+    });
+
+    expect(() => manager.start("failed", "true", process.cwd())).toThrow(
+      "shell resolution failed",
     );
-    expect(children).toHaveLength(32);
+
+    const pidless = new FakeChildProcess();
+    mocks.spawnCommand.mockImplementationOnce(() => {
+      children.push(pidless);
+      return pidless;
+    });
+    expect(() => manager.start("pidless", "true", process.cwd())).toThrow(
+      "no process ID was assigned",
+    );
+
+    expect(manager.list()).toEqual(before);
+    expect(readdirSync(logDir).sort()).toEqual(filesBefore);
+  });
+
+  it("clears every finished record and its logs without removing live records", async () => {
+    const live = manager.start("live", "sleep 60", process.cwd());
+    const finished = manager.start("finished", "true", process.cwd());
+    children[1].emit("close", 0, null);
+    await manager.getOutput(finished.id);
+    const finishedLogs = manager.getLogFiles(finished.id);
+    const changed = vi.fn();
+    manager.onEvent((event) => {
+      if (event.type === "processes_changed") changed();
+    });
+
+    expect(manager.clearFinished()).toBe(1);
+
+    expect(manager.get(live.id)?.status).toBe("running");
+    expect(manager.get(finished.id)).toBeNull();
+    expect(changed).toHaveBeenCalledOnce();
+    expect(
+      Object.values(finishedLogs ?? {}).every((path) => !existsSync(path)),
+    ).toBe(true);
   });
 
   it("uses private, independent log directories", () => {
@@ -880,6 +959,81 @@ describe("ProcessManager", () => {
           event.type === "process_readiness_timeout",
       ),
     ).toBe(false);
+  });
+
+  it("captures completion output before a reentrant removal", async () => {
+    const proc = manager.start("tests", "pnpm test", process.cwd());
+    let ended: Extract<ManagerEvent, { type: "process_ended" }> | undefined;
+    let cleared = false;
+    manager.onEvent((event) => {
+      if (
+        event.type === "processes_changed" &&
+        manager.get(proc.id)?.status === "exited" &&
+        !cleared
+      ) {
+        cleared = true;
+        manager.clearFinished();
+      }
+      if (event.type === "process_ended") ended = event;
+    });
+
+    children[0].stdout.emit("data", Buffer.from("final output\n"));
+    await manager.getOutput(proc.id);
+    children[0].emit("close", 0, null);
+    await manager.getOutput(proc.id);
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(manager.get(proc.id)).toBeNull();
+    expect(ended?.recentOutput).toEqual([
+      { type: "stdout", text: "final output" },
+    ]);
+  });
+
+  it("preserves an active wait while evicting its finished record", async () => {
+    const oldest = manager.start("oldest", "sleep 60", process.cwd());
+    for (let index = 1; index < 32; index++) {
+      const proc = manager.start(`process-${index}`, "true", process.cwd());
+      children[index].emit("close", 0, null);
+      await manager.getOutput(proc.id);
+    }
+    const logs = manager.getLogFiles(oldest.id);
+    let logsExistedDuringEviction = false;
+    let replacementStarted = false;
+    manager.onEvent((event) => {
+      if (
+        event.type === "processes_changed" &&
+        manager.get(oldest.id)?.status === "exited" &&
+        !replacementStarted
+      ) {
+        replacementStarted = true;
+        manager.start("replacement", "sleep 60", process.cwd());
+        logsExistedDuringEviction =
+          manager.get(oldest.id) === null &&
+          Object.values(logs ?? {}).every(existsSync);
+      }
+    });
+
+    const pending = manager.waitFor(oldest.id, {
+      until: "output",
+      pattern: "final marker",
+      timeoutMs: 5000,
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    children[0].stdout.emit("data", Buffer.from("final marker\n"));
+    children[0].emit("close", 0, null);
+    await vi.advanceTimersByTimeAsync(10);
+    const result = await pending;
+
+    expect(replacementStarted).toBe(true);
+    expect(logsExistedDuringEviction).toBe(true);
+    expect(result).toMatchObject({
+      reason: "matched",
+      recentOutput: [{ type: "stdout", text: "final marker" }],
+    });
+    expect(manager.list()).toHaveLength(32);
+    expect(Object.values(logs ?? {}).every((path) => !existsSync(path))).toBe(
+      true,
+    );
   });
 
   it("waits for a process to exit", async () => {

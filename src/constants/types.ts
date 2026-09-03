@@ -15,6 +15,11 @@ export const LIVE_STATUSES: ReadonlySet<ProcessStatus> = new Set([
   "terminate_timeout",
 ]);
 
+export interface ProcessOutputLine {
+  type: "stdout" | "stderr";
+  text: string;
+}
+
 export interface ProcessInfo {
   id: string;
   name: string;
@@ -36,6 +41,7 @@ export type ManagerEvent =
       type: "process_ended";
       info: ProcessInfo;
       triggerAgentTurn: boolean;
+      recentOutput: ProcessOutputLine[] | null;
       readinessPattern?: string;
       completionSummaryFile?: string;
     }
@@ -74,14 +80,23 @@ export type ResolveProcessResult =
 export type WaitUntil = "exit" | "output";
 
 export type WaitOutcome =
-  | { reason: "exited"; info: ProcessInfo }
+  | {
+      reason: "exited";
+      info: ProcessInfo;
+      recentOutput: ProcessOutputLine[] | null;
+    }
   | {
       reason: "matched";
       info: ProcessInfo;
       line: string;
       stream: "stdout" | "stderr";
+      recentOutput: ProcessOutputLine[] | null;
     }
-  | { reason: "timeout"; info: ProcessInfo }
+  | {
+      reason: "timeout";
+      info: ProcessInfo;
+      recentOutput: ProcessOutputLine[] | null;
+    }
   | { reason: "cancelled"; info: ProcessInfo };
 
 /**

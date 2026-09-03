@@ -5,6 +5,7 @@ export type {
   ManagerEvent,
   ProcessesDetails,
   ProcessInfo,
+  ProcessOutputLine,
   ProcessPreview,
   ProcessStatus,
   ResolveProcessResult,

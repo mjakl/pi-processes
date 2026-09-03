@@ -181,7 +181,7 @@ Repeated `process list`, `process output`, or `process logs` calls just to check
 - `process output` returns what was printed since the agent's previous `output` call, and reports "no new output" instead of resending known lines.
 - `process logs` returns log file paths for deeper inspection and for the `/ps` overlay.
 - Each stdout, stderr, and combined log file keeps the latest output, up to 5 MiB. On overflow it trims to roughly 4 MiB so runaway output cannot grow without bound.
-- A session retains at most 16 live processes and 32 total process records. Stop live work or run `process clear` before starting more.
+- A session retains at most 16 live processes and 32 total process records. At the total limit, a successful start evicts the oldest finished record and its logs; live records are never evicted. Use `process clear` to remove all finished records explicitly.
 - Use `output` and `logs` when the user asks, when debugging, or when investigating a specific problem.
 
 ### Bash interception

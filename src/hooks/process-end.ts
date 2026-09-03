@@ -1,7 +1,11 @@
 import { constants } from "node:fs";
 import { type FileHandle, open } from "node:fs/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { MESSAGE_TYPE_PROCESS_UPDATE, type ProcessInfo } from "../constants";
+import {
+  MESSAGE_TYPE_PROCESS_UPDATE,
+  type ProcessInfo,
+  type ProcessOutputLine,
+} from "../constants";
 import type { ProcessManager } from "../manager";
 import {
   formatRuntime,
@@ -32,8 +36,8 @@ export function setupProcessEndHook(pi: ExtensionAPI, manager: ProcessManager) {
     if (event.type !== "process_ended" || !event.triggerAgentTurn) return;
     void notifyProcessEnd(
       pi,
-      manager,
       event.info,
+      event.recentOutput,
       event.readinessPattern,
       event.completionSummaryFile,
     ).catch(() => {
@@ -44,8 +48,8 @@ export function setupProcessEndHook(pi: ExtensionAPI, manager: ProcessManager) {
 
 async function notifyProcessEnd(
   pi: ExtensionAPI,
-  manager: ProcessManager,
   info: ProcessInfo,
+  recentOutput: ProcessOutputLine[] | null,
   readinessPattern?: string,
   completionSummaryFile?: string,
 ): Promise<void> {
@@ -63,7 +67,7 @@ async function notifyProcessEnd(
   const message = await buildAgentMessage(
     readinessSummary,
     info,
-    manager,
+    recentOutput,
     completionSummaryFile,
   );
 
@@ -91,7 +95,7 @@ async function notifyProcessEnd(
 async function buildAgentMessage(
   summary: string,
   info: ProcessInfo,
-  manager: ProcessManager,
+  recentOutput: ProcessOutputLine[] | null,
   completionSummaryFile?: string,
 ): Promise<string> {
   const lines = [
@@ -110,7 +114,6 @@ async function buildAgentMessage(
     lines.push("", COMPLETION_SUMMARY_UNAVAILABLE);
   }
 
-  const recentOutput = await manager.getCombinedOutput(info.id, 20);
   if (recentOutput === null) {
     lines.push(
       "",

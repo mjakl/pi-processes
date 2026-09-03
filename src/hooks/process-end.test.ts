@@ -60,7 +60,7 @@ function setupHarness(
   setupProcessEndHook(pi, manager);
 
   if (!listener) throw new Error("process-end listener was not registered");
-  return { listener, manager, pi };
+  return { listener, manager, pi, combinedOutput };
 }
 
 async function notifyWithSummary(
@@ -74,6 +74,7 @@ async function notifyWithSummary(
     type: "process_ended",
     info: endedProcess(),
     triggerAgentTurn: true,
+    recentOutput: combinedOutput,
     completionSummaryFile,
   });
   await vi.waitFor(() => expect(harness.pi.sendMessage).toHaveBeenCalledOnce());
@@ -90,12 +91,13 @@ describe("setupProcessEndHook", () => {
   });
 
   it("sends an LLM-visible process-end notification with process id and recent output", async () => {
-    const { listener, pi } = setupHarness();
+    const { listener, manager, pi, combinedOutput } = setupHarness();
 
     listener({
       type: "process_ended",
       info: endedProcess(),
       triggerAgentTurn: true,
+      recentOutput: combinedOutput,
     });
 
     await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(1));
@@ -129,6 +131,7 @@ describe("setupProcessEndHook", () => {
       ].join("\n"),
     );
     expect(options).toEqual({ triggerTurn: true, deliverAs: "steer" });
+    expect(manager.getCombinedOutput).not.toHaveBeenCalled();
   });
 
   it("replaces recent output with a sanitized completion summary", async () => {
@@ -199,7 +202,7 @@ describe("setupProcessEndHook", () => {
         expect(content).toContain(
           "Completion summary unavailable; showing recent output.\n\nRecent output:\nstdout: fallback output",
         );
-        expect(manager.getCombinedOutput).toHaveBeenCalledOnce();
+        expect(manager.getCombinedOutput).not.toHaveBeenCalled();
         expect(fsMocks.open).toHaveBeenCalledOnce();
       }
     } finally {
@@ -272,12 +275,13 @@ describe("setupProcessEndHook", () => {
   });
 
   it("reports when a process exits before its readiness marker", async () => {
-    const { listener, pi } = setupHarness();
+    const { listener, pi, combinedOutput } = setupHarness();
 
     listener({
       type: "process_ended",
       info: endedProcess(),
       triggerAgentTurn: true,
+      recentOutput: combinedOutput,
       readinessPattern: "listening on",
     });
 
@@ -295,6 +299,7 @@ describe("setupProcessEndHook", () => {
       type: "process_ended",
       info: endedProcess(),
       triggerAgentTurn: true,
+      recentOutput: null,
     });
 
     await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(1));
@@ -309,6 +314,7 @@ describe("setupProcessEndHook", () => {
       type: "process_ended",
       info: endedProcess({ status: "killed", exitCode: null }),
       triggerAgentTurn: false,
+      recentOutput: null,
       completionSummaryFile: "/does/not/exist",
     });
 

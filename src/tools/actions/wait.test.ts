@@ -25,13 +25,11 @@ const exited: ProcessInfo = {
   success: false,
 };
 
-function fakeManager(outcome: WaitOutcome | null, combined: string[] = []) {
+function fakeManager(outcome: WaitOutcome | null) {
   return {
     resolve: vi.fn(() => ({ ok: true, info: running })),
     waitFor: vi.fn(async () => outcome),
-    getCombinedOutput: vi.fn(async () =>
-      combined.map((text) => ({ type: "stdout" as const, text })),
-    ),
+    getCombinedOutput: vi.fn(),
     list: vi.fn(() => [running]),
   } as const;
 }
@@ -43,15 +41,15 @@ function textOf(result: { content: Array<{ type: string; text?: string }> }) {
 
 describe("executeWait", () => {
   it("reports a matched pattern with the matching line", async () => {
-    const manager = fakeManager(
-      {
-        reason: "matched",
-        info: running,
-        line: "listening on http://localhost:3000",
-        stream: "stdout",
-      },
-      ["listening on http://localhost:3000"],
-    );
+    const manager = fakeManager({
+      reason: "matched",
+      info: running,
+      line: "listening on http://localhost:3000",
+      stream: "stdout",
+      recentOutput: [
+        { type: "stdout", text: "listening on http://localhost:3000" },
+      ],
+    });
 
     const result = await executeWait(
       { id: "server", until: "output", pattern: "listening on" },
@@ -62,6 +60,7 @@ describe("executeWait", () => {
     expect(result.details.wait?.reason).toBe("matched");
     expect(result.details.message).toContain("listening on http://localhost");
     expect(textOf(result)).toContain("Recent output:");
+    expect(manager.getCombinedOutput).not.toHaveBeenCalled();
   });
 
   it("reports when a matched process has already exited", async () => {
@@ -70,6 +69,7 @@ describe("executeWait", () => {
       info: { ...exited, success: true, exitCode: 0 },
       line: "ready",
       stream: "stdout",
+      recentOutput: [],
     });
 
     const result = await executeWait(
@@ -82,7 +82,11 @@ describe("executeWait", () => {
   });
 
   it("reports an exit with its outcome", async () => {
-    const manager = fakeManager({ reason: "exited", info: exited });
+    const manager = fakeManager({
+      reason: "exited",
+      info: exited,
+      recentOutput: [],
+    });
 
     const result = await executeWait({ id: "server" }, manager as never);
 
@@ -92,7 +96,11 @@ describe("executeWait", () => {
   });
 
   it("treats a timeout as a normal result that suggests waiting again", async () => {
-    const manager = fakeManager({ reason: "timeout", info: running });
+    const manager = fakeManager({
+      reason: "timeout",
+      info: running,
+      recentOutput: [],
+    });
 
     const result = await executeWait(
       { id: "server", timeoutSeconds: 5 },
@@ -106,7 +114,11 @@ describe("executeWait", () => {
   });
 
   it("says the process ended without printing the pattern", async () => {
-    const manager = fakeManager({ reason: "exited", info: exited });
+    const manager = fakeManager({
+      reason: "exited",
+      info: exited,
+      recentOutput: [],
+    });
 
     const result = await executeWait(
       { id: "server", until: "output", pattern: "listening on" },
