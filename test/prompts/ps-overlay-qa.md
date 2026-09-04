@@ -5,7 +5,7 @@ Run through all steps without waiting for confirmation. Keep messages short.
 3. Start `./test/test-exit-failure.sh 2` as a background process named `failure`.
 4. Start `./test/test-ignore-term.sh` as a background process named `stubborn`.
 5. Tell me to open `/ps` and verify these behaviors:
-   - the status line shows active and finished counts
+   - Pi's native status area shows only `N procs` for active processes and clears at zero
    - `up/down` changes the highlighted process
    - the right pane shows logs for the highlighted process
    - `left/right` scrolls older/newer log output

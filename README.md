@@ -16,13 +16,13 @@ Coding agents often need to start dev servers, watch-mode tests, log tails, port
 - **Non-interactive wait** — print and JSON runs can block for an exit, output pattern, or timeout because those one-shot modes cannot resume after shutting down.
 - **Incremental output** — `process output` returns only what was printed since the agent last looked.
 - **`/ps` overlay** — users can monitor processes and logs without asking the agent to poll.
-- **Status line** — a compact process status remains available with retained records in the TUI and reports only live activity to RPC clients.
+- **Native process status** — Pi's status area shows `N procs` while processes are active; `/ps` remains the complete process view.
 - **File-backed logs** — recent process output is retained outside the agent context window.
 - **Detached-command interception** — commands that escape the session are blocked and routed to the `process` tool, and unbounded bash calls get a timeout so a long command cannot hang the agent.
 
 ### Install
 
-Requires Pi 0.84.2 or newer.
+Requires Pi 0.85.0 or newer.
 
 Install from npm:
 
@@ -203,7 +203,7 @@ Routing long work to the tool in the first place is the job of the tool descript
 
 - Log files live in a temporary directory managed by the extension.
 - Background processes are cleaned up when the session shuts down.
-- The TUI status widget remains visible while managed records exist. In RPC mode, it clears when no process is active; finished records and logs remain available through the process tool.
+- Pi's native extension status area shows only the active-process count as `N procs` and clears at zero. Finished records and logs remain available through `/ps` and the process tool.
 - The `/ps` overlay reads from file-backed logs, so process output remains available without stuffing the full log into the agent context.
 
 ### Development

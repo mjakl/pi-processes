@@ -6,10 +6,10 @@ Use `test/prompts/ps-overlay-qa.md` as the prompt to send to the agent when vali
 
 ### Expected behavior
 
-- a small status line appears below the editor while managed processes exist
+- Pi's native status area shows `N procs` while processes are active and clears at zero
 - the agent remains responsive after starting the processes instead of blocking on their completion
 - `stream` produces one automatic readiness notification for `Line 00001`
-- the status line shows `active` and `finished` counts only
+- the status area shows only the active-process count
 - `/ps` opens a single centered overlay
 - the left pane lists processes, newest/live ones first
 - the right pane shows logs for the currently highlighted process

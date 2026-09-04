@@ -8,7 +8,7 @@ import { setupCleanupHook } from "./cleanup";
 import { setupMessageRenderer } from "./message-renderer";
 import { setupProcessEndHook } from "./process-end";
 import { setupProcessReadinessHook } from "./process-readiness";
-import { setupStatusWidget } from "./status-widget";
+import { setupProcessStatus } from "./process-status";
 
 export function setupProcessesHooks(
   pi: ExtensionAPI,
@@ -18,7 +18,7 @@ export function setupProcessesHooks(
   setupCleanupHook(pi, manager);
   setupProcessEndHook(pi, manager);
   setupProcessReadinessHook(pi, manager);
-  setupStatusWidget(pi, manager);
+  setupProcessStatus(pi, manager);
   setupAgentGuidance(pi);
 
   if (config.interception.blockBackgroundCommands) {
