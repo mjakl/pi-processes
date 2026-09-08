@@ -13,7 +13,7 @@ Coding agents often need to start dev servers, watch-mode tests, log tails, port
 - **Agent-facing process tool** — the agent can start, inspect, kill, and clear managed processes.
 - **Responsive by default** — in TUI and RPC modes, managed work continues across agent turns instead of blocking the conversation.
 - **Event-driven readiness and completion** — in TUI and RPC modes, `readyPattern` can wake the agent when output marks a process ready, and managed processes wake it when they end.
-- **Non-interactive wait** — print and JSON runs can block for an exit, output pattern, or timeout because those one-shot modes cannot resume after shutting down.
+- **Explicit wait in every mode** — block for an exit, output pattern, or timeout when results are required before the run ends. Long-lived TUI and RPC sessions remain asynchronous by default.
 - **Incremental output** — `process output` returns only what was printed since the agent last looked.
 - **`/ps` overlay** — users can monitor processes and logs without asking the agent to poll.
 - **Native process status** — Pi's status area shows `N procs` while processes are active; `/ps` remains the complete process view.
@@ -123,19 +123,20 @@ The tool is named `process`.
 Actions:
 
 - `start` — start a managed process, optionally with one-shot readiness monitoring.
-- `wait` — in print and JSON modes only, block until exit, matching output, or timeout.
+- `wait` — in every mode, block until exit, matching output, or timeout.
 - `list` — list managed processes.
 - `output` — return the output printed since the agent last looked.
 - `logs` — return file paths for stdout, stderr, and combined logs.
 - `kill` — terminate or force-kill a process.
 - `clear` — remove finished processes from the manager.
 
-Interactive tool-call examples:
+Agent tool-call examples (not shell commands):
 
 ```text
 process start "pnpm dev" name="backend-dev" readyPattern="listening on" readyTimeoutSeconds=30
 process start "pnpm test --watch" name="tests"
 process start "pnpm test" name="test-run" completionSummaryFile="artifacts/test-summary.txt"
+process wait id="test-run" timeoutSeconds=60
 process list
 process output id="backend-dev"
 process logs id="proc_1"
@@ -148,10 +149,11 @@ Field rules:
 
 - `start` requires `command` and `name`. A live process name must be unique; starting a second live process under the same name is rejected so lookups by name stay unambiguous.
 - A started command must remain in the foreground. Do not include `&`, `setsid`, `coproc`, detached container flags, or daemon-mode options; the manager supervises the foreground process group.
-- In TUI and RPC modes, `start` accepts `readyPattern` and optional `readyTimeoutSeconds` (default 60, at most 1,800). `readyTimeoutSeconds` requires `readyPattern`. Matching is a case-insensitive substring across stdout and stderr. A match or timeout wakes the agent without stopping the process.
-- In TUI and RPC modes, `start` also accepts `completionSummaryFile`. Relative paths resolve from the process working directory. The process must create and manage this UTF-8 file. When the process ends, Pi reads the file once and uses up to 128 sanitized lines in place of recent output. If the file is unavailable or invalid, the notification says so and falls back to recent output.
-- `output`, `logs`, and `kill` require `id`. Non-interactive `wait` also requires `id`.
-- In print and JSON modes, `wait` accepts `until` (`"exit"` by default, or `"output"` with `pattern`) and `timeoutSeconds` (default 60, at most 1,800).
+- In every mode, `start` accepts `readyPattern` and optional `readyTimeoutSeconds` (default 60, at most 1,800). `readyTimeoutSeconds` requires `readyPattern`. Matching is a case-insensitive substring across stdout and stderr. A match or timeout wakes the agent without stopping the process.
+- In every mode, `start` also accepts `completionSummaryFile`. Relative paths resolve from the process working directory. The process must create and manage this UTF-8 file. Completion notifications and completed waits use the same substantive report: process identity, command, success/failure/termination outcome, and summary or recent output. Each report reads the file once after the process ends; the file is not cached or managed by the extension.
+- Summary reports contain up to 128 sanitized lines, with each line limited to 512 UTF-8 bytes. When content is omitted, the last line is an omission marker. An unavailable, invalid, or empty summary produces an explicit fallback report with recent output. Both delivery paths apply the same bounds and sanitization. Wait timeouts and readiness results for a still-running process do not read the summary.
+- `output`, `logs`, `kill`, and `wait` require `id`.
+- `wait` accepts `until` (`"exit"` by default, or `"output"` with a case-insensitive substring `pattern`) and `timeoutSeconds` (default 60, at most 1,800). A timeout or cancelled wait does not stop the process. A successful wait operation can report a failed or terminated command; inspect the command outcome.
 - `kill` accepts `force=true` to send `SIGKILL` instead of `SIGTERM`.
 
 ### Matching processes
@@ -165,16 +167,22 @@ A failed lookup names the known processes, so a mistyped id does not cost an ext
 
 ### Event-driven continuation instead of polling
 
-In TUI and RPC modes:
+By default, in long-lived TUI and RPC sessions:
 
 1. Call `process start`; it returns immediately and the process continues across agent turns.
 2. Do independent work if any remains. Otherwise, report that work is running and end the turn so the user remains in control.
 3. Pi automatically resumes the agent when the process ends.
 4. For a server or watcher, set `readyPattern` on `start`. Pi resumes the agent when the pattern matches, when the readiness timeout expires, or when the process exits first.
 
-Readiness monitoring is one-shot. A timeout expires only the monitor; it does not stop the process. A process that becomes ready and later exits produces both a readiness notification and an end notification.
+Readiness monitoring is one-shot. A timeout expires only the monitor; it does not stop the process. Normally, a process that becomes ready and later exits produces both a readiness notification and an end notification.
 
-Repeated `process list`, `process output`, or `process logs` calls just to check progress are an anti-pattern. Use `output` for one-off inspection or diagnosis. In print and JSON modes, where the session cannot resume after exit, use the available `process wait` action once when completion is required.
+For explicit run-to-completion work, or whenever required results must be obtained before the run ends, use `process wait` instead. Print and JSON runs should wait for required results rather than rely on a future turn. If a wait times out and the result is still required, wait again. Keep each wait within the available execution time, including any caller inactivity limit; a longer tool timeout cannot extend the caller's lifetime.
+
+An active wait suppresses the automatic completion notification. For readiness, only an output wait that actually delivers the same case-insensitive marker replaces the automatic readiness notification. Different markers and exit-only waits leave readiness independent. If a matching wait times out or is cancelled before readiness, the monitor remains armed until its own deadline or the process ends. If a matching result cannot be delivered, readiness is notified instead. A notification already sent before a wait starts cannot be retracted.
+
+Wait for required results, not every process's natural exit. For a temporary dev server, start it, wait for readiness, run and wait for tests, then stop the server. A user-facing service intended to keep running needs a long-lived owning session; session shutdown still stops managed processes.
+
+Repeated `process list`, `process output`, or `process logs` calls just to check progress are an anti-pattern. Use `output` for one-off inspection or diagnosis, not polling.
 
 ### Logs and output
 

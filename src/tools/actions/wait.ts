@@ -1,13 +1,15 @@
 import {
   type ExecuteResult,
   LIVE_STATUSES,
-  type ProcessInfo,
-  type ProcessOutputLine,
   type WaitOutcome,
   type WaitUntil,
 } from "../../constants";
 import type { ProcessManager } from "../../manager";
-import { formatRuntime, formatStatus, sanitizeLine } from "../../utils";
+import { formatStatus, sanitizeLine, truncateCmd } from "../../utils";
+import {
+  buildCompletionReport,
+  formatRecentOutput,
+} from "../../utils/completion-report";
 import {
   formatAmbiguousProcessMessage,
   formatUnknownProcessMessage,
@@ -61,12 +63,34 @@ export async function executeWait(
   }
 
   const waitedSeconds = Math.round((Date.now() - startedAt) / 1000);
-  const tail = recentOutput(outcome.recentOutput);
-  const summary = describe(outcome, until, params.pattern, waitedSeconds);
-  const lines = [summary, ...tail];
+  const completed =
+    outcome.reason !== "timeout" && !LIVE_STATUSES.has(outcome.info.status);
+  const report = completed
+    ? await buildCompletionReport(
+        outcome.info,
+        outcome.recentOutput,
+        outcome.completionSummaryFile,
+        outcome.readinessPattern,
+      )
+    : undefined;
+  const waitCondition = describeCondition(
+    outcome,
+    until,
+    params.pattern,
+    waitedSeconds,
+  );
+  const summary = report
+    ? [report.split("\n")[0], until === "output" ? waitCondition : ""]
+        .filter(Boolean)
+        .join(" ")
+    : waitCondition;
+  // Preserve the output-wait condition in addition to the shared terminal report.
+  const content = report
+    ? report + (until === "output" ? `\n\n${waitCondition}` : "")
+    : [summary, ...formatRecentOutput(outcome.recentOutput)].join("\n");
 
   return {
-    content: [{ type: "text", text: lines.join("\n") }],
+    content: [{ type: "text", text: content }],
     details: {
       action: "wait",
       success: true,
@@ -75,14 +99,17 @@ export async function executeWait(
         reason: outcome.reason,
         waitedSeconds,
         ...(outcome.reason === "matched"
-          ? { line: sanitizeLine(outcome.line), stream: outcome.stream }
+          ? {
+              line: truncateCmd(sanitizeLine(outcome.line), 500),
+              stream: outcome.stream,
+            }
           : {}),
       },
     },
   };
 }
 
-function describe(
+function describeCondition(
   outcome: Exclude<WaitOutcome, { reason: "cancelled" }>,
   until: WaitUntil,
   pattern: string | undefined,
@@ -92,47 +119,18 @@ function describe(
   const name = `"${sanitizeLine(info.name)}" (${info.id})`;
 
   if (outcome.reason === "matched") {
-    const matched = `${name} matched "${sanitizeLine(pattern ?? "")}" after ${waitedSeconds}s on ${outcome.stream}: ${sanitizeLine(outcome.line)}`;
-    return LIVE_STATUSES.has(info.status)
-      ? matched
-      : `${matched}. It ${endingDescription(info)} after ${formatRuntime(info.startTime, info.endTime)}.`;
+    return `${name} matched "${sanitizeLine(pattern ?? "")}" after ${waitedSeconds}s on ${outcome.stream}: ${truncateCmd(sanitizeLine(outcome.line), 500)}`;
   }
 
   if (outcome.reason === "exited") {
-    const ending = endingDescription(info);
-    return until === "output"
-      ? `${name} ${ending} after ${formatRuntime(info.startTime, info.endTime)} without printing "${sanitizeLine(pattern ?? "")}".`
-      : `${name} ${ending} after ${formatRuntime(info.startTime, info.endTime)}.`;
+    return `Wait ended without printing "${sanitizeLine(pattern ?? "")}".`;
   }
 
   const stillWaiting =
     until === "output"
       ? `did not print "${sanitizeLine(pattern ?? "")}"`
       : "is still running";
-  return `${name} ${stillWaiting} within ${waitedSeconds}s [${formatStatus(info)}]. Wait again with a longer timeoutSeconds, or stop it with process kill.`;
-}
-
-function endingDescription(info: ProcessInfo): string {
-  if (info.status === "killed") return "was terminated";
-  return info.success
-    ? "completed successfully"
-    : `failed with exit code ${info.exitCode ?? "?"}`;
-}
-
-function recentOutput(combined: ProcessOutputLine[] | null): string[] {
-  if (combined === null) {
-    return [
-      "",
-      "Recent output unavailable because process logs could not be read.",
-    ];
-  }
-  if (combined.length === 0) return [];
-
-  return [
-    "",
-    "Recent output:",
-    ...combined.map((line) => `${line.type}: ${sanitizeLine(line.text)}`),
-  ];
+  return `${name} ${stillWaiting} within ${waitedSeconds}s [${formatStatus(info)}]. Wait again if the result is still required, keeping timeoutSeconds within your available execution time, or stop it with process kill.`;
 }
 
 function failure(message: string): ExecuteResult {

@@ -34,8 +34,8 @@ export function setupBashTimeout(pi: ExtensionAPI, timeoutSeconds: number) {
 
     const nextStep =
       ctx.mode === "print" || ctx.mode === "json"
-        ? "Then use process wait once so the result is available before session shutdown."
-        : "The managed process continues across turns and notifies the agent automatically.";
+        ? "Then use process wait for required results before ending this run; a wait timeout leaves the process running."
+        : "The managed process continues across turns and notifies the agent automatically. Normally, do independent work or end your turn; use process wait instead for explicit run-to-completion work or required results before this run ends.";
 
     return {
       content: [

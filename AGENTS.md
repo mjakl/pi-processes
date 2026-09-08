@@ -10,9 +10,11 @@ During UI tests that require processes to be running, either give the user a pro
 
 ## Waiting behavior
 
-Managed processes continue across agent turns. In TUI and RPC modes, start a process once, do any independent work, then give a short status update and end the turn. The automatic process-end notification resumes the agent. For a server or watcher, pass `readyPattern` to `process start` for a one-shot readiness notification; `readyTimeoutSeconds` controls when that monitor reports a timeout without stopping the process.
+Managed processes continue across agent turns. In long-lived TUI and RPC sessions, normally start a process once, do any independent work, then give a short status update and end the turn. The automatic process-end notification resumes the agent. For a server or watcher, pass `readyPattern` to `process start` for a one-shot readiness notification; `readyTimeoutSeconds` controls when that monitor reports a timeout without stopping the process.
 
-Do not poll with repeated `process list`, `process output`, or `process logs` calls. In print and JSON modes only, `process wait` remains available when the one-shot run depends on process completion.
+Do not poll with repeated `process list`, `process output`, or `process logs` calls. `process wait` is available in every mode. Use it for explicit run-to-completion work or when required results must be obtained before the run ends, including print and JSON runs. A wait timeout leaves the process running; wait again if the result is still required. Keep each wait within the available execution time, including any caller inactivity limit.
+
+Wait for required results, not every process's natural exit. For a temporary dev server, wait for readiness, run and wait for tests, then stop the server. Services intended to keep running need a long-lived owning session; session shutdown still stops managed processes.
 
 ## Interception scope
 

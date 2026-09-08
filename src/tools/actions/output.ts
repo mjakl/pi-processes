@@ -49,7 +49,7 @@ function resolveProcessResult(
 export async function executeOutput(
   params: OutputParams,
   manager: ProcessManager,
-  options: { exposeWait: boolean } = { exposeWait: false },
+  options: { defaultWait: boolean } = { defaultWait: false },
 ): Promise<ExecuteResult> {
   if (!params.id) {
     return {
@@ -102,7 +102,7 @@ export async function executeOutput(
     outputParts.push("\nstderr:");
     outputParts.push(...output.stderr.map(sanitizeLine));
   }
-  const hint = waitHint(latestProc, output, options.exposeWait);
+  const hint = waitHint(latestProc, output, options.defaultWait);
   if (hint) outputParts.push("", hint);
 
   const fullText = outputParts.join("\n");
@@ -155,7 +155,7 @@ function summarize(proc: ProcessInfo, output: AgentOutputRead): string {
 function waitHint(
   proc: ProcessInfo,
   output: AgentOutputRead,
-  exposeWait: boolean,
+  defaultWait: boolean,
 ): string | null {
   if (!LIVE_STATUSES.has(proc.status)) return null;
   if (output.hasNewOutput) return null;
@@ -164,9 +164,9 @@ function waitHint(
     output.emptyReads > 1
       ? `You have checked ${output.emptyReads} times with nothing new. `
       : "";
-  return exposeWait
-    ? `[${repeated}Do not poll with process output. Use process wait once when this non-interactive run depends on completion.]`
-    : `[${repeated}Do not poll with process output. The process continues across turns and will notify you automatically; if no independent work remains, end your turn.]`;
+  return defaultWait
+    ? `[${repeated}Do not poll with process output. Use process wait for required results before ending this run.]`
+    : `[${repeated}Do not poll with process output. The process continues across turns and will notify you automatically; normally, if no independent work remains, end your turn. For explicit run-to-completion work, use process wait instead.]`;
 }
 
 /**

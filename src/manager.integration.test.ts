@@ -3,9 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
+import type { ManagerEvent } from "./constants";
 import { setupProcessEndHook } from "./hooks/process-end";
 import { ProcessManager } from "./manager";
 import { executeStart } from "./tools/actions/start";
+import { executeWait } from "./tools/actions/wait";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -57,7 +59,10 @@ describe("ProcessManager (real processes)", () => {
     }
   }, 20000);
 
-  it("reads a relative completion summary after descendants and logs close", async () => {
+  it.each([
+    "notification",
+    "wait",
+  ])("reads a relative completion summary through %s after descendants and logs close", async (delivery) => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-process-summary-integration-"));
     const manager = new ProcessManager();
     try {
@@ -93,12 +98,81 @@ describe("ProcessManager (real processes)", () => {
       );
       expect(started.details.success).toBe(true);
 
-      const content = await notification;
+      const result =
+        delivery === "wait"
+          ? await executeWait(
+              { id: "summary-probe", timeoutSeconds: 5 },
+              manager,
+            )
+          : undefined;
+      const content =
+        result?.content[0]?.type === "text"
+          ? result.content[0].text
+          : await notification;
       expect(content).toContain("Completion summary:\nintegration summary");
+      const repeated = await executeWait({ id: "summary-probe" }, manager);
+      expect(
+        repeated.content[0]?.type === "text" ? repeated.content[0].text : "",
+      ).toBe(content.split("\n\nThis is the automatic")[0]);
       expect(content).not.toContain("too early");
     } finally {
       manager.cleanup();
       rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 20000);
+
+  it("waits for temporary server readiness and required tests, then stops the server", async () => {
+    const manager = new ProcessManager();
+    const events: ManagerEvent[] = [];
+    manager.onEvent((event) => events.push(event));
+    try {
+      const server = manager.start(
+        "server",
+        "sleep 0.2; printf 'Listen'; sleep 0.2; printf 'ing on :3000\\n'; sleep 30",
+        process.cwd(),
+        {
+          pattern: "listening on",
+          timeoutMs: 5000,
+        },
+      );
+      const ready = await executeWait(
+        {
+          id: server.id,
+          until: "output",
+          pattern: "LISTENING ON",
+          timeoutSeconds: 5,
+        },
+        manager,
+      );
+      expect(ready.details.wait?.reason).toBe("matched");
+      expect(events.some((event) => event.type === "process_ready")).toBe(
+        false,
+      );
+      const tests = manager.start(
+        "tests",
+        "printf 'test failed\\n'; exit 7",
+        process.cwd(),
+      );
+      const result = await executeWait(
+        { id: tests.id, timeoutSeconds: 5 },
+        manager,
+      );
+      expect(result.details.success).toBe(true);
+      expect(result.details.message).toContain("failed with exit code 7");
+      expect(manager.get(server.id)?.status).toBe("running");
+      expect(await manager.kill(server.id)).toMatchObject({
+        ok: true,
+        info: { status: "killed" },
+      });
+      const stopped = await executeWait({ id: server.id }, manager);
+      expect(stopped.details.message).toContain("was terminated");
+      expect(
+        events.some(
+          (event) => event.type === "process_ended" && event.triggerAgentTurn,
+        ),
+      ).toBe(false);
+    } finally {
+      manager.cleanup();
     }
   }, 20000);
 

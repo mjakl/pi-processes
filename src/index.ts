@@ -27,7 +27,7 @@ export default async function (pi: ExtensionAPI) {
     if (toolRegistered) return;
     toolRegistered = true;
     setupProcessesTools(pi, manager, {
-      exposeWait: ctx.mode === "print" || ctx.mode === "json",
+      defaultWait: ctx.mode === "print" || ctx.mode === "json",
     });
   });
 }

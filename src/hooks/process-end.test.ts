@@ -21,6 +21,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 import type { ProcessManager } from "../manager";
+import { executeWait } from "../tools/actions/wait";
 import { setupProcessEndHook } from "./process-end";
 
 function endedProcess(overrides: Partial<ProcessInfo> = {}): ProcessInfo {
@@ -79,10 +80,42 @@ async function notifyWithSummary(
   });
   await vi.waitFor(() => expect(harness.pi.sendMessage).toHaveBeenCalledOnce());
   const [message] = vi.mocked(harness.pi.sendMessage).mock.calls[0] ?? [];
-  return {
-    ...harness,
-    content: typeof message?.content === "string" ? message.content : "",
-  };
+  const content = typeof message?.content === "string" ? message.content : "";
+  // Each delivery reads the caller-owned file once; it is not cached or managed.
+  expect(fsMocks.open).toHaveBeenCalledOnce();
+  fsMocks.open.mockClear();
+  await expectWaitReport(
+    content,
+    endedProcess(),
+    combinedOutput,
+    completionSummaryFile,
+  );
+  expect(fsMocks.open).toHaveBeenCalledOnce();
+  return { ...harness, content };
+}
+
+async function expectWaitReport(
+  notification: string,
+  info: ProcessInfo,
+  recentOutput: Array<{ type: "stdout" | "stderr"; text: string }> | null,
+  completionSummaryFile?: string,
+  readinessPattern?: string,
+) {
+  const result = await executeWait({ id: info.id }, {
+    resolve: () => ({ ok: true, info }),
+    waitFor: async () => ({
+      reason: "exited",
+      info,
+      recentOutput,
+      completionSummaryFile,
+      readinessPattern,
+    }),
+  } as never);
+  const content = result.content[0];
+  expect(content?.type === "text" ? content.text : "").toBe(
+    notification.split("\n\nThis is the automatic")[0],
+  );
+  expect(result.details.success).toBe(true);
 }
 
 describe("setupProcessEndHook", () => {
@@ -113,14 +146,14 @@ describe("setupProcessEndHook", () => {
         success: false,
       },
     });
-    expect(message?.content).toContain('Process "tests" (proc_1) crashed');
+    expect(message?.content).toContain('Process "tests" (proc_1) failed');
     expect(message?.content).toContain("Command: pnpm test");
     expect(message?.content).toContain("stdout: running tests");
     expect(message?.content).toContain("stderr: failed");
     expect(message?.content).not.toContain("\u001b");
     expect(message?.content).toBe(
       [
-        'Process "tests" (proc_1) crashed with exit code 1 after 1s.',
+        'Process "tests" (proc_1) failed with exit code 1 after 1s.',
         "Command: pnpm test",
         "",
         "Recent output:",
@@ -130,8 +163,50 @@ describe("setupProcessEndHook", () => {
         "This is the automatic process-end notification, so the process is finished; use process output or process logs only if you need more of what it printed.",
       ].join("\n"),
     );
+    await expectWaitReport(
+      String(message?.content),
+      endedProcess(),
+      combinedOutput,
+    );
     expect(options).toEqual({ triggerTurn: true, deliverAs: "steer" });
     expect(manager.getCombinedOutput).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      status: "exited",
+      success: true,
+      exitCode: 0,
+      ending: "completed successfully",
+    },
+    {
+      status: "killed",
+      success: false,
+      exitCode: null,
+      ending: "was terminated",
+    },
+  ] as const)("shares the $status report with wait", async ({
+    ending,
+    ...outcome
+  }) => {
+    const { listener, pi, combinedOutput } = setupHarness([
+      { type: "stderr", text: `\u001b[31m${"x".repeat(600)}\u001b[0m` },
+    ]);
+    const info = endedProcess(outcome);
+    listener({
+      type: "process_ended",
+      info,
+      triggerAgentTurn: true,
+      recentOutput: combinedOutput,
+    });
+    await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledOnce());
+    const content = String(
+      vi.mocked(pi.sendMessage).mock.calls[0]?.[0].content,
+    );
+    expect(content).toContain(ending);
+    expect(content).not.toContain("\u001b");
+    expect(content).not.toContain("x".repeat(501));
+    await expectWaitReport(content, info, combinedOutput);
   });
 
   it("replaces recent output with a sanitized completion summary", async () => {
@@ -173,7 +248,6 @@ describe("setupProcessEndHook", () => {
       const { content } = await notifyWithSummary(summaryFile);
 
       expect(content).toContain("Completion summary:\none read");
-      expect(fsMocks.open).toHaveBeenCalledOnce();
       expect(readFileSpy).toHaveBeenCalledOnce();
       expect(existsSync(summaryFile)).toBe(true);
     } finally {
@@ -203,7 +277,6 @@ describe("setupProcessEndHook", () => {
           "Completion summary unavailable; showing recent output.\n\nRecent output:\nstdout: fallback output",
         );
         expect(manager.getCombinedOutput).not.toHaveBeenCalled();
-        expect(fsMocks.open).toHaveBeenCalledOnce();
       }
     } finally {
       chmodSync(join(dir, "unreadable.txt"), 0o600);
@@ -290,6 +363,13 @@ describe("setupProcessEndHook", () => {
     expect(message?.content).toContain(
       'exited before the readiness pattern "listening on" appeared',
     );
+    await expectWaitReport(
+      String(message?.content),
+      endedProcess(),
+      combinedOutput,
+      undefined,
+      "listening on",
+    );
   });
 
   it("reports unavailable process logs in the notification", async () => {
@@ -305,6 +385,35 @@ describe("setupProcessEndHook", () => {
     await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(1));
     const [message] = vi.mocked(pi.sendMessage).mock.calls[0] ?? [];
     expect(message?.content).toContain("process logs could not be read");
+    await expectWaitReport(String(message?.content), endedProcess(), null);
+  });
+
+  it.each([
+    "timeout",
+    "matched",
+  ] as const)("does not read an unfinished summary for %s", async (reason) => {
+    const info = endedProcess({
+      status: "running",
+      endTime: null,
+      exitCode: null,
+      success: null,
+    });
+    const result = await executeWait(
+      { id: info.id, until: "output", pattern: "ready" },
+      {
+        resolve: () => ({ ok: true, info }),
+        waitFor: async () => ({
+          reason,
+          info,
+          recentOutput: [],
+          line: "ready",
+          stream: "stdout",
+          completionSummaryFile: "/unfinished.txt",
+        }),
+      } as never,
+    );
+    expect(result.details.wait?.reason).toBe(reason);
+    expect(fsMocks.open).not.toHaveBeenCalled();
   });
 
   it("does not enqueue or read files for tool-triggered kills", () => {
