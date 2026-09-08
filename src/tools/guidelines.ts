@@ -8,14 +8,14 @@ const BASE_GUIDELINES = [
   "Never poll processes managed by the process tool with process list or process output.",
 ];
 
-export function getPromptGuidelines(exposeWait: boolean): string[] {
-  return exposeWait
+export function getPromptGuidelines(defaultWait: boolean): string[] {
+  return defaultWait
     ? [
         ...BASE_GUIDELINES,
-        "In print and JSON modes, process wait is the reliable source of completion and readiness results; use it once when the run depends on a managed process finishing or printing a specific output marker.",
+        "Use process wait for required completion or readiness results before ending a print or JSON run. Wait is available in every mode. A wait timeout leaves the process running; wait again if the result is still required. Keep individual waits within your available execution time, including any caller inactivity limit.",
       ]
     : [
         ...BASE_GUIDELINES,
-        "In TUI and RPC modes, processes managed by the process tool notify you automatically when they end. Use readyPattern on process start when an immediate next step depends on a specific output marker. If no independent work remains after start, give a short status update and end your turn; the automatic notification will resume you.",
+        "In long-lived TUI and RPC sessions, processes managed by the process tool notify you automatically when they end. Use readyPattern on process start for asynchronous readiness. Normally, if no independent work remains after start, give a short status update and end your turn; the automatic notification will resume you. For explicit run-to-completion work or when required results must be obtained before this run ends, use process wait instead. A wait timeout leaves the process running; wait again if the result is still required. Keep individual waits within your available execution time, including any caller inactivity limit.",
       ];
 }

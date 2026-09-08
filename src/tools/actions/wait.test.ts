@@ -110,7 +110,9 @@ describe("executeWait", () => {
     expect(result.details.success).toBe(true);
     expect(result.details.wait?.reason).toBe("timeout");
     expect(result.details.message).toContain("is still running");
-    expect(result.details.message).toContain("longer timeoutSeconds");
+    expect(result.details.message).toContain(
+      "keeping timeoutSeconds within your available execution time",
+    );
   });
 
   it("says the process ended without printing the pattern", async () => {

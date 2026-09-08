@@ -830,6 +830,205 @@ describe("ProcessManager", () => {
     );
   });
 
+  it("delivers matching readiness through the output wait, not an event", async () => {
+    const events: ManagerEvent[] = [];
+    manager.onEvent((event) => events.push(event));
+    const proc = manager.start("server", "pnpm dev", process.cwd(), {
+      pattern: "listening",
+      timeoutMs: 5000,
+    });
+    const pending = manager.waitFor(proc.id, {
+      until: "output",
+      pattern: "LISTENING",
+      timeoutMs: 3000,
+    });
+    children[0].stdout.emit("data", Buffer.from("Listen"));
+    children[0].stdout.emit("data", Buffer.from("ing on :3000\n"));
+    await vi.advanceTimersByTimeAsync(200);
+    expect(await pending).toMatchObject({
+      reason: "matched",
+      line: "Listening on :3000",
+    });
+    expect(events.filter((event) => event.type === "process_ready")).toEqual(
+      [],
+    );
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(
+      events.some((event) => event.type === "process_readiness_timeout"),
+    ).toBe(false);
+  });
+
+  it.each([
+    "output",
+    "exit",
+  ] as const)("keeps readiness independent of a different %s wait", async (until) => {
+    const events: ManagerEvent[] = [];
+    manager.onEvent((event) => events.push(event));
+    const proc = manager.start("server", "pnpm dev", process.cwd(), {
+      pattern: "listening",
+      timeoutMs: 5000,
+    });
+    const pending = manager.waitFor(proc.id, {
+      until,
+      pattern: "database connected",
+      timeoutMs: 1000,
+    });
+    children[0].stdout.emit("data", Buffer.from("listening\n"));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await pending).toMatchObject({ reason: "timeout" });
+    expect(
+      events.filter((event) => event.type === "process_ready"),
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    "timeout",
+    "cancel",
+  ])("leaves readiness armed after wait %s before the marker", async (ending) => {
+    const events: ManagerEvent[] = [];
+    manager.onEvent((event) => events.push(event));
+    const proc = manager.start("server", "pnpm dev", process.cwd(), {
+      pattern: "ready",
+      timeoutMs: 5000,
+    });
+    const controller = new AbortController();
+    const pending = manager.waitFor(proc.id, {
+      until: "output",
+      pattern: "ready",
+      timeoutMs: 1000,
+      abortSignal: controller.signal,
+    });
+    if (ending === "cancel") controller.abort();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await pending).toMatchObject({
+      reason: ending === "cancel" ? "cancelled" : "timeout",
+    });
+    children[0].stdout.emit("data", Buffer.from("ready\n"));
+    expect(
+      events.filter((event) => event.type === "process_ready"),
+    ).toHaveLength(1);
+  });
+
+  it("does not swallow readiness if cancellation wins before the matching result", async () => {
+    const events: ManagerEvent[] = [];
+    manager.onEvent((event) => events.push(event));
+    const proc = manager.start("server", "pnpm dev", process.cwd(), {
+      pattern: "ready",
+      timeoutMs: 5000,
+    });
+    const controller = new AbortController();
+    const pending = manager.waitFor(proc.id, {
+      until: "output",
+      pattern: "ready",
+      timeoutMs: 1000,
+      abortSignal: controller.signal,
+    });
+    children[0].stdout.emit("data", Buffer.from("ready\n"));
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(await pending).toMatchObject({ reason: "cancelled" });
+    expect(
+      events.filter((event) => event.type === "process_ready"),
+    ).toHaveLength(1);
+  });
+
+  it("releases readiness when the matching wait cannot read its logs", async () => {
+    const events: ManagerEvent[] = [];
+    manager.onEvent((event) => events.push(event));
+    const proc = manager.start("server", "pnpm dev", process.cwd(), {
+      pattern: "ready",
+      timeoutMs: 5000,
+    });
+    const pending = manager.waitFor(proc.id, {
+      until: "output",
+      pattern: "ready",
+      timeoutMs: 1000,
+    });
+    children[0].stdout.emit("data", Buffer.from("ready\n"));
+    rmSync(proc.stdoutFile);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(await pending).toBeNull();
+    expect(
+      events.filter((event) => event.type === "process_ready"),
+    ).toHaveLength(1);
+  });
+
+  it("lets one delivered matching wait replace readiness even if another is cancelled", async () => {
+    const events: ManagerEvent[] = [];
+    manager.onEvent((event) => events.push(event));
+    const proc = manager.start("server", "pnpm dev", process.cwd(), {
+      pattern: "ready",
+      timeoutMs: 5000,
+    });
+    const controller = new AbortController();
+    const cancelled = manager.waitFor(proc.id, {
+      until: "output",
+      pattern: "ready",
+      timeoutMs: 1000,
+      abortSignal: controller.signal,
+    });
+    const matched = manager.waitFor(proc.id, {
+      until: "output",
+      pattern: "ready",
+      timeoutMs: 1000,
+    });
+    children[0].stderr.emit("data", Buffer.from("READY\n"));
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(await cancelled).toMatchObject({ reason: "cancelled" });
+    expect(await matched).toMatchObject({
+      reason: "matched",
+      stream: "stderr",
+    });
+    expect(events.filter((event) => event.type === "process_ready")).toEqual(
+      [],
+    );
+  });
+
+  it("keeps the monitor's own timeout independent of a matching output wait", async () => {
+    const events: ManagerEvent[] = [];
+    manager.onEvent((event) => events.push(event));
+    const proc = manager.start("server", "pnpm dev", process.cwd(), {
+      pattern: "ready",
+      timeoutMs: 500,
+    });
+    const pending = manager.waitFor(proc.id, {
+      until: "output",
+      pattern: "ready",
+      timeoutMs: 1000,
+    });
+    await vi.advanceTimersByTimeAsync(600);
+    expect(
+      events.filter((event) => event.type === "process_readiness_timeout"),
+    ).toHaveLength(1);
+    children[0].stdout.emit("data", Buffer.from("ready\n"));
+    await vi.advanceTimersByTimeAsync(200);
+    expect(await pending).toMatchObject({ reason: "matched" });
+    expect(events.filter((event) => event.type === "process_ready")).toEqual(
+      [],
+    );
+  });
+
+  it("does not retract readiness already notified before a wait", async () => {
+    const events: ManagerEvent[] = [];
+    manager.onEvent((event) => events.push(event));
+    const proc = manager.start("server", "pnpm dev", process.cwd(), {
+      pattern: "ready",
+      timeoutMs: 5000,
+    });
+    children[0].stdout.emit("data", Buffer.from("ready\n"));
+    expect(
+      await manager.waitFor(proc.id, {
+        until: "output",
+        pattern: "ready",
+        timeoutMs: 1000,
+      }),
+    ).toMatchObject({ reason: "matched" });
+    expect(
+      events.filter((event) => event.type === "process_ready"),
+    ).toHaveLength(1);
+  });
+
   it("emits a one-shot readiness event for matching output", async () => {
     const events: ManagerEvent[] = [];
     manager.onEvent((event) => events.push(event));

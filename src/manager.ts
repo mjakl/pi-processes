@@ -49,6 +49,19 @@ interface ReadinessWatch {
   streams: Record<StreamName, ReadinessStreamMatcher>;
 }
 
+type ReadyEvent = Extract<ManagerEvent, { type: "process_ready" }>;
+
+interface ReadyDelivery {
+  event: ReadyEvent;
+  remainingWaits: number;
+  delivered: boolean;
+}
+
+interface OutputWait {
+  needle: string;
+  readiness?: ReadyDelivery;
+}
+
 interface ManagedProcess extends ProcessInfo {
   lastSignalSent: NodeJS.Signals | null;
   combinedFile: string;
@@ -57,6 +70,7 @@ interface ManagedProcess extends ProcessInfo {
   readiness: ReadinessWatch | null;
   readinessPatternAtEnd: string | null;
   activeWaits: number;
+  outputWaits: Set<OutputWait>;
   retired: boolean;
   /** What the agent has already been shown, so later reads only return new output. */
   agentCursors: StreamCursors;
@@ -143,7 +157,7 @@ export class ProcessManager {
     if (next === "exited" || next === "killed") {
       const readinessPattern =
         managed.readinessPatternAtEnd ?? this.cancelReadiness(managed);
-      managed.readinessPatternAtEnd = null;
+      managed.readinessPatternAtEnd = readinessPattern ?? null;
       const triggerAgentTurn =
         managed.triggerAgentTurnOnEnd && managed.activeWaits === 0;
       endedEvent = {
@@ -392,6 +406,7 @@ export class ProcessManager {
         : null,
       readinessPatternAtEnd: null,
       activeWaits: 0,
+      outputWaits: new Set(),
       retired: false,
       agentCursors: {
         stdout: { offset: 0, end: 0 },
@@ -579,13 +594,28 @@ export class ProcessManager {
 
     managed.readiness = null;
     if (readiness.timer) clearTimeout(readiness.timer);
-    this.emit({
+    const event: ReadyEvent = {
       type: "process_ready",
       info: this.toProcessInfo(managed),
       pattern: readiness.pattern,
       line,
       stream,
-    });
+    };
+    const waits = [...managed.outputWaits].filter(
+      (wait) => wait.needle === readiness.needle,
+    );
+    if (waits.length === 0) {
+      this.emit(event);
+    } else {
+      // Defer, do not discard: scanning or cancellation can still prevent a
+      // matching wait result. The last unsuccessful waiter releases the event.
+      const delivery: ReadyDelivery = {
+        event,
+        remainingWaits: waits.length,
+        delivered: false,
+      };
+      for (const wait of waits) wait.readiness = delivery;
+    }
   }
 
   private cancelReadiness(managed: ManagedProcess): string | undefined {
@@ -772,11 +802,25 @@ export class ProcessManager {
     if (!managed) return null;
 
     managed.activeWaits++;
+    const outputWait: OutputWait | undefined =
+      opts.until === "output"
+        ? { needle: (opts.pattern ?? "").toLowerCase() }
+        : undefined;
+    if (outputWait) managed.outputWaits.add(outputWait);
+    let deliveredMatch = false;
     try {
       const deadline = Date.now() + opts.timeoutMs;
       const info = () => this.toProcessInfo(managed);
       const recentOutput = () =>
         this.readCombinedOutputAfterFlush(managed, RECENT_OUTPUT_LINES);
+      const completion = () => ({
+        ...(managed.completionSummaryFile
+          ? { completionSummaryFile: managed.completionSummaryFile }
+          : {}),
+        ...(managed.readinessPatternAtEnd
+          ? { readinessPattern: managed.readinessPatternAtEnd }
+          : {}),
+      });
       const abortSignal = opts.abortSignal
         ? AbortSignal.any([
             opts.abortSignal,
@@ -790,6 +834,7 @@ export class ProcessManager {
             reason: "exited",
             info: info(),
             recentOutput: await recentOutput(),
+            ...completion(),
           };
         }
         if (abortSignal.aborted) {
@@ -806,6 +851,7 @@ export class ProcessManager {
           reason: LIVE_STATUSES.has(managed.status) ? "timeout" : "exited",
           info: info(),
           recentOutput: await recentOutput(),
+          ...completion(),
         };
       }
 
@@ -815,15 +861,21 @@ export class ProcessManager {
         stderr: { offset: 0 },
       };
       for (;;) {
+        if (abortSignal.aborted) return { reason: "cancelled", info: info() };
         const match = await this.scanForPattern(managed, scanned, pattern);
+        if (abortSignal.aborted) return { reason: "cancelled", info: info() };
         if (match === null) return null;
         if (match) {
+          const output = await recentOutput();
+          if (abortSignal.aborted) return { reason: "cancelled", info: info() };
+          deliveredMatch = true;
           return {
             reason: "matched",
             info: info(),
             line: match.line,
             stream: match.stream,
-            recentOutput: await recentOutput(),
+            recentOutput: output,
+            ...completion(),
           };
         }
         if (!LIVE_STATUSES.has(managed.status)) {
@@ -831,6 +883,7 @@ export class ProcessManager {
             reason: "exited",
             info: info(),
             recentOutput: await recentOutput(),
+            ...completion(),
           };
         }
         if (abortSignal.aborted) {
@@ -854,6 +907,16 @@ export class ProcessManager {
         if (result === "aborted") return { reason: "cancelled", info: info() };
       }
     } finally {
+      if (outputWait) {
+        managed.outputWaits.delete(outputWait);
+        const delivery = outputWait.readiness;
+        if (delivery) {
+          delivery.delivered ||= deliveredMatch;
+          delivery.remainingWaits--;
+          if (delivery.remainingWaits === 0 && !delivery.delivered)
+            this.emit(delivery.event);
+        }
+      }
       managed.activeWaits--;
       if (managed.retired && managed.activeWaits === 0) {
         this.removeManagedProcessLogs(managed);

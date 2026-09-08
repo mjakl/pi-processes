@@ -79,7 +79,10 @@ export type ResolveProcessResult =
 
 export type WaitUntil = "exit" | "output";
 
-export type WaitOutcome =
+export type WaitOutcome = {
+  completionSummaryFile?: string;
+  readinessPattern?: string;
+} & (
   | {
       reason: "exited";
       info: ProcessInfo;
@@ -97,7 +100,8 @@ export type WaitOutcome =
       info: ProcessInfo;
       recentOutput: ProcessOutputLine[] | null;
     }
-  | { reason: "cancelled"; info: ProcessInfo };
+  | { reason: "cancelled"; info: ProcessInfo }
+);
 
 /**
  * Output the agent has not seen yet. The manager remembers how much of each

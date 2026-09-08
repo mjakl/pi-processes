@@ -29,7 +29,7 @@ export async function executeAction(
   manager: ProcessManager,
   ctx: ExtensionContext,
   signal?: AbortSignal,
-  options: { exposeWait: boolean } = { exposeWait: false },
+  options: { defaultWait: boolean } = { defaultWait: false },
 ): Promise<ExecuteResult> {
   switch (params.action) {
     case "start":

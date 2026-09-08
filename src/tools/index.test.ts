@@ -27,7 +27,7 @@ interface CapturedTool {
 
 function captureTool(
   manager: ProcessManager,
-  exposeWait = false,
+  defaultWait = false,
 ): CapturedTool {
   let captured: CapturedTool | undefined;
   setupProcessesTools(
@@ -37,7 +37,7 @@ function captureTool(
       },
     } as never,
     manager,
-    { exposeWait },
+    { defaultWait },
   );
   if (!captured) throw new Error("Tool was not registered");
   return captured;
@@ -51,6 +51,7 @@ describe("process tool contract", () => {
     expect(action.type).toBe("string");
     expect(action.enum).toEqual([
       "start",
+      "wait",
       "list",
       "output",
       "logs",
@@ -61,30 +62,33 @@ describe("process tool contract", () => {
     expect(tool.executionMode).toBe("sequential");
   });
 
-  it("exposes blocking wait only for non-interactive runs", () => {
+  it("exposes wait and asynchronous options regardless of default guidance", () => {
     const interactive = captureTool({} as ProcessManager);
     const noninteractive = captureTool({} as ProcessManager, true);
 
-    expect(interactive.parameters.properties.action.enum).not.toContain("wait");
+    expect(interactive.parameters.properties.action.enum).toContain("wait");
     expect(noninteractive.parameters.properties.action.enum).toContain("wait");
-    expect("until" in interactive.parameters.properties).toBe(false);
+    expect("until" in interactive.parameters.properties).toBe(true);
     expect("until" in noninteractive.parameters.properties).toBe(true);
     expect("readyPattern" in interactive.parameters.properties).toBe(true);
-    expect("readyPattern" in noninteractive.parameters.properties).toBe(false);
+    expect("readyPattern" in noninteractive.parameters.properties).toBe(true);
     expect("completionSummaryFile" in interactive.parameters.properties).toBe(
       true,
     );
     expect(
       "completionSummaryFile" in noninteractive.parameters.properties,
-    ).toBe(false);
-    expect(interactive.description).not.toContain("process wait");
-    expect(interactive.promptGuidelines.join("\n")).not.toContain(
-      "process wait",
-    );
+    ).toBe(true);
+    expect(interactive.parameters).toEqual(noninteractive.parameters);
+    expect(interactive.description).toContain("wait:");
+    expect(interactive.promptGuidelines.join("\n")).toContain("process wait");
+    expect(interactive.promptGuidelines.join("\n")).toContain("end your turn");
     expect(noninteractive.description).toContain("wait:");
   });
 
-  it("rejects completion summaries outside interactive start", async () => {
+  it.each([
+    false,
+    true,
+  ])("accepts completion summaries with defaultWait=%s", async (defaultWait) => {
     const interactiveManager = {
       start: vi.fn(() => ({
         id: "proc_1",
@@ -101,8 +105,7 @@ describe("process tool contract", () => {
         stderrFile: "/tmp/stderr.log",
       })),
     } as unknown as ProcessManager;
-    const interactive = captureTool(interactiveManager);
-    const noninteractive = captureTool({ start: vi.fn() } as never, true);
+    const interactive = captureTool(interactiveManager, defaultWait);
     const params = {
       action: "start",
       name: "tests",
@@ -119,13 +122,6 @@ describe("process tool contract", () => {
       "/work/project",
       undefined,
       "/work/project/summary.txt",
-    );
-    await expect(
-      noninteractive.execute("call", params, undefined, undefined, {
-        cwd: "/work/project",
-      }),
-    ).rejects.toThrow(
-      'Parameter "completionSummaryFile" is not valid for start',
     );
   });
 

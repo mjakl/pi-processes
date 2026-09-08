@@ -52,7 +52,7 @@ describe("extension entrypoint", () => {
     ["rpc", false],
     ["json", true],
     ["print", true],
-  ] as const)("registers the process tool for %s mode", async (mode, exposeWait) => {
+  ] as const)("registers the process tool for %s mode", async (mode, defaultWait) => {
     const harness = piHarness();
     await extension(harness.pi as never);
 
@@ -66,7 +66,7 @@ describe("extension entrypoint", () => {
     expect(mocks.setupTools).toHaveBeenCalledWith(
       harness.pi,
       expect.anything(),
-      { exposeWait },
+      { defaultWait },
     );
   });
 });

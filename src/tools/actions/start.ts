@@ -24,7 +24,7 @@ export function executeStart(
   params: StartParams,
   manager: ProcessManager,
   ctx: ExtensionContext,
-  options: { exposeWait: boolean } = { exposeWait: false },
+  options: { defaultWait: boolean } = { defaultWait: false },
 ): ExecuteResult {
   if (!params.name?.trim()) {
     return {
@@ -96,14 +96,12 @@ export function executeStart(
     }
 
     const startedAt = formatTimestamp(proc.startTime);
-    const readyNextStep = options.exposeWait
-      ? "Use process wait once if this non-interactive run depends on the readiness or completion result."
-      : "If no independent work remains, give a short status update and end your turn; the process continues in the background.";
+    const readyNextStep = options.defaultWait
+      ? "Use process wait for required readiness or completion results before ending this run."
+      : "Normally, if no independent work remains, give a short status update and end your turn; the process continues in the background. For explicit run-to-completion work, use process wait instead.";
     const nextStep = readyPattern
       ? `Readiness monitoring is armed for "${sanitizeLine(readyPattern)}" for ${readyTimeoutSeconds}s. You will be notified when it matches, times out, or the process exits first. ${readyNextStep}`
-      : options.exposeWait
-        ? "Use process wait if this non-interactive run depends on completion; it is the reliable source of the result before session shutdown."
-        : "You will be notified automatically when it ends. If no independent work remains, give a short status update and end your turn; the process continues in the background.";
+      : `You will be notified automatically when it ends. ${readyNextStep}`;
     const message = `Started "${sanitizeLine(proc.name)}" (${proc.id}, PID: ${proc.pid})\nStarted at: ${startedAt}\nLogs: ${proc.stdoutFile}\n${nextStep}`;
     return {
       content: [{ type: "text", text: message }],

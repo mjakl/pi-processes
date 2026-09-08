@@ -89,14 +89,14 @@ describe("executeOutput", () => {
     expect(content).not.toContain("You have checked");
   });
 
-  it("points non-interactive runs at one blocking wait", async () => {
+  it("points non-interactive runs at waiting for required results", async () => {
     const manager = fakeManager(read({ emptyReads: 1 }));
 
     const result = await executeOutput({ id: "proc_1" }, manager as never, {
-      exposeWait: true,
+      defaultWait: true,
     });
 
-    expect(textOf(result)).toContain("Use process wait once");
+    expect(textOf(result)).toContain("Use process wait for required results");
   });
 
   it("escalates when the agent keeps checking an unchanged process", async () => {

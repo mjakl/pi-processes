@@ -87,7 +87,9 @@ describe("setupBashTimeout", () => {
       content: Array<{ type: string; text: string }>;
     };
 
-    expect(result.content[0].text).toContain("use process wait once");
+    expect(result.content[0].text).toContain(
+      "use process wait for required results",
+    );
     expect(result.content[0].text).not.toContain(
       "notifies the agent automatically",
     );

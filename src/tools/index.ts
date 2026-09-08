@@ -25,15 +25,7 @@ import { DEFAULT_WAIT_SECONDS, MAX_WAIT_SECONDS } from "./actions/wait";
 import { getPromptGuidelines } from "./guidelines";
 import { ToolBody, ToolCallHeader, ToolFooter } from "./tool-rendering";
 
-const INTERACTIVE_PROCESS_ACTIONS = [
-  "start",
-  "list",
-  "output",
-  "logs",
-  "kill",
-  "clear",
-] as const;
-const NONINTERACTIVE_PROCESS_ACTIONS = [
+const PROCESS_ACTIONS = [
   "start",
   "wait",
   "list",
@@ -44,7 +36,7 @@ const NONINTERACTIVE_PROCESS_ACTIONS = [
 ] as const;
 const WAIT_UNTIL = ["exit", "output"] as const;
 
-type ProcessAction = (typeof NONINTERACTIVE_PROCESS_ACTIONS)[number];
+type ProcessAction = (typeof PROCESS_ACTIONS)[number];
 type WaitUntilParam = (typeof WAIT_UNTIL)[number];
 interface ProcessesParamsType {
   action: ProcessAction;
@@ -90,17 +82,13 @@ const OPTIONAL_PARAMS: OptionalParam[] = [
   "completionSummaryFile",
 ];
 
-function createProcessesParams(exposeWait: boolean) {
-  const actions = exposeWait
-    ? NONINTERACTIVE_PROCESS_ACTIONS
-    : INTERACTIVE_PROCESS_ACTIONS;
-  const actionDescription = exposeWait
-    ? "Action: start (run command), wait (block until exit, matching output, or timeout), list (show all), output (read new output), logs (get log file paths), kill (terminate or force-kill), clear (remove finished)"
-    : "Action: start (run command), list (show all), output (read new output), logs (get log file paths), kill (terminate or force-kill), clear (remove finished)";
+function createProcessesParams() {
+  const actionDescription =
+    "Action: start (run command), wait (block until exit, matching output, or timeout), list (show all), output (read new output), logs (get log file paths), kill (terminate or force-kill), clear (remove finished)";
 
   return Type.Object(
     {
-      action: StringEnum(actions, { description: actionDescription }),
+      action: StringEnum(PROCESS_ACTIONS, { description: actionDescription }),
       command: Type.Optional(
         Type.String({
           description: "Command to run (required for start)",
@@ -118,9 +106,8 @@ function createProcessesParams(exposeWait: boolean) {
       ),
       id: Type.Optional(
         Type.String({
-          description: exposeWait
-            ? "Exact process ID or exact friendly name to match (required for wait/output/kill/logs)."
-            : "Exact process ID or exact friendly name to match (required for output/kill/logs).",
+          description:
+            "Exact process ID or exact friendly name to match (required for wait/output/kill/logs).",
           minLength: 1,
           maxLength: 120,
         }),
@@ -131,69 +118,58 @@ function createProcessesParams(exposeWait: boolean) {
             "Force-kill the process with SIGKILL for kill action. Use after a normal terminate times out, or when you need an immediate hard stop.",
         }),
       ),
-      ...(exposeWait
-        ? {
-            until: Type.Optional(
-              StringEnum(WAIT_UNTIL, {
-                description:
-                  "For wait only. 'exit' (default) blocks until the process ends; 'output' blocks until its output contains 'pattern'.",
-              }),
-            ),
-            pattern: Type.Optional(
-              Type.String({
-                description:
-                  "For wait with until='output'. Text to match as a case-insensitive substring.",
-                minLength: 1,
-                maxLength: 200,
-              }),
-            ),
-            timeoutSeconds: Type.Optional(
-              Type.Integer({
-                description: `For wait only. How long to block (default ${DEFAULT_WAIT_SECONDS}, max ${MAX_WAIT_SECONDS}).`,
-                minimum: 1,
-                maximum: MAX_WAIT_SECONDS,
-              }),
-            ),
-          }
-        : {}),
-      ...(!exposeWait
-        ? {
-            readyPattern: Type.Optional(
-              Type.String({
-                description:
-                  "For start only. One-shot case-insensitive output substring that triggers an automatic readiness notification without blocking the agent.",
-                minLength: 1,
-                maxLength: 200,
-              }),
-            ),
-            readyTimeoutSeconds: Type.Optional(
-              Type.Integer({
-                description: `For start with readyPattern only. Trigger a readiness-timeout notification after this many seconds (default ${DEFAULT_READY_TIMEOUT_SECONDS}, max ${MAX_READY_TIMEOUT_SECONDS}). The process keeps running.`,
-                minimum: 1,
-                maximum: MAX_READY_TIMEOUT_SECONDS,
-              }),
-            ),
-            completionSummaryFile: Type.Optional(
-              Type.String({
-                description:
-                  "For start only. Read this caller-owned UTF-8 file once when the process ends and use it in the automatic completion notification. Relative paths resolve from the process working directory.",
-                minLength: 1,
-              }),
-            ),
-          }
-        : {}),
+
+      until: Type.Optional(
+        StringEnum(WAIT_UNTIL, {
+          description:
+            "For wait only. 'exit' (default) blocks until the process ends; 'output' blocks until its output contains 'pattern'.",
+        }),
+      ),
+      pattern: Type.Optional(
+        Type.String({
+          description:
+            "For wait with until='output'. Text to match as a case-insensitive substring.",
+          minLength: 1,
+          maxLength: 200,
+        }),
+      ),
+      timeoutSeconds: Type.Optional(
+        Type.Integer({
+          description: `For wait only. How long to block (default ${DEFAULT_WAIT_SECONDS}, max ${MAX_WAIT_SECONDS}).`,
+          minimum: 1,
+          maximum: MAX_WAIT_SECONDS,
+        }),
+      ),
+
+      readyPattern: Type.Optional(
+        Type.String({
+          description:
+            "For start only. One-shot case-insensitive output substring that triggers an automatic readiness notification without blocking the agent.",
+          minLength: 1,
+          maxLength: 200,
+        }),
+      ),
+      readyTimeoutSeconds: Type.Optional(
+        Type.Integer({
+          description: `For start with readyPattern only. Trigger a readiness-timeout notification after this many seconds (default ${DEFAULT_READY_TIMEOUT_SECONDS}, max ${MAX_READY_TIMEOUT_SECONDS}). The process keeps running.`,
+          minimum: 1,
+          maximum: MAX_READY_TIMEOUT_SECONDS,
+        }),
+      ),
+      completionSummaryFile: Type.Optional(
+        Type.String({
+          description:
+            "For start only. Use this caller-owned UTF-8 file in completion reports from wait or automatic notification. Read once per report, only after the process ends. Relative paths resolve from the process working directory.",
+          minLength: 1,
+        }),
+      ),
     },
     { additionalProperties: false },
   );
 }
 
-function validateParams(
-  params: ProcessesParamsType,
-  exposeWait: boolean,
-): void {
-  const actions: readonly string[] = exposeWait
-    ? NONINTERACTIVE_PROCESS_ACTIONS
-    : INTERACTIVE_PROCESS_ACTIONS;
+function validateParams(params: ProcessesParamsType): void {
+  const actions: readonly string[] = PROCESS_ACTIONS;
   if (!actions.includes(params.action)) {
     throw new Error(
       `Unknown process action: ${sanitizeLine(String(params.action))}`,
@@ -209,10 +185,7 @@ function validateParams(
     }
   }
 
-  const allowed =
-    params.action === "start" && exposeWait
-      ? new Set<OptionalParam>(["command", "name"])
-      : ALLOWED_PARAMS[params.action];
+  const allowed = ALLOWED_PARAMS[params.action];
   for (const field of OPTIONAL_PARAMS) {
     if (params[field] !== undefined && !allowed.has(field)) {
       throw new Error(`Parameter "${field}" is not valid for ${params.action}`);
@@ -321,25 +294,9 @@ function throwIfAborted(signal?: AbortSignal): void {
 export function setupProcessesTools(
   pi: ExtensionAPI,
   manager: ProcessManager,
-  options: { exposeWait: boolean } = { exposeWait: false },
+  options: { defaultWait: boolean } = { defaultWait: false },
 ) {
-  const { exposeWait } = options;
-  const ProcessesParams = createProcessesParams(exposeWait);
-  const waitDescription = exposeWait
-    ? `\n- wait: block this non-interactive run until exit, matching output, or timeout.`
-    : "";
-  const lifecycleDescription = exposeWait
-    ? "In this non-interactive mode, wait is the reliable source of completion and readiness results."
-    : "Managed processes continue across agent turns and notify you automatically when they end.";
-  const readinessDescription = exposeWait
-    ? "Use wait with an output pattern when readiness matters."
-    : "For a server or watcher, pass readyPattern to start for a one-shot, non-blocking notification when a specific output marker appears.";
-  const startOptions = exposeWait
-    ? ""
-    : ", with optional readyPattern, readyTimeoutSeconds, and completionSummaryFile";
-  const continuationDescription = exposeWait
-    ? "Use wait once when the run depends on process completion."
-    : "If no independent work remains after start, give a short status update and end your turn so the user stays in control.";
+  const ProcessesParams = createProcessesParams();
 
   pi.registerTool<typeof ProcessesParams, ProcessesDetails>({
     name: "process",
@@ -349,27 +306,29 @@ export function setupProcessesTools(
 Use 'start' for servers, watchers, builds, full test runs, installs, migrations, benchmarks,
 and anything else that may block. Keep bash for commands that finish in seconds.
 
-${lifecycleDescription} ${readinessDescription}
-Never poll with list or output. ${continuationDescription}
+${getPromptGuidelines(options.defaultWait).slice(1).join("\n")}
+For a server or watcher, readyPattern on start arms a one-shot, non-blocking readiness notification.
+Completion reports from wait and notifications use the same summary or recent output; a failed command remains a failed command even when wait succeeds.
 
 Actions:
-- start: name + command${startOptions}. The command must stay in the foreground; never use &,
-  nohup, setsid, or daemon/detach flags.${waitDescription}
+- start: name + command, with optional readyPattern, readyTimeoutSeconds, and completionSummaryFile. The command must stay in the foreground; never use &,
+  nohup, setsid, or daemon/detach flags.
+- wait: block until exit, matching output, or timeout. A timeout leaves the process running. A delivered output wait replaces the readiness notification only for the same case-insensitive marker.
 - output: read output not seen before. It is for inspection, not polling.
 - logs: get full log paths. list: inspect records. kill: stop work. clear: drop finished records.
 
 Processes stop when the session ends.`,
     promptSnippet:
-      "Run and supervise long-running or blocking commands - servers, watchers, builds, test runs - without blocking the conversation",
+      "Run and supervise servers, watchers, builds, and tests with asynchronous notifications or explicit waiting",
     executionMode: "sequential",
 
-    promptGuidelines: getPromptGuidelines(exposeWait),
+    promptGuidelines: getPromptGuidelines(options.defaultWait),
 
     parameters: ProcessesParams,
 
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       throwIfAborted(signal);
-      validateParams(params as ProcessesParamsType, exposeWait);
+      validateParams(params as ProcessesParamsType);
       const result = await executeAction(
         params as ProcessesParamsType,
         manager,

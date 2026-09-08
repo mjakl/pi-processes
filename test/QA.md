@@ -1,5 +1,15 @@
 # Manual QA
 
+## Wait and asynchronous delivery
+
+Run `pnpm test` for automated coverage at the tool, manager, and notification seams. The real-process tests in `src/manager.integration.test.ts` cover temporary server readiness, waiting for required tests, stopping the server, and summary delivery after descendants and logs close.
+
+For a live TUI or RPC smoke test, send this prompt to the agent with the branch's extension loaded:
+
+> Start a managed process named `wait-probe` with command `sleep 2; printf 'READY\\n'; sleep 2; exit 7` and readiness marker `ready`. Explicitly wait for output `READY`, then explicitly wait for completion. Report the command's exit outcome. Do not poll with list or output.
+
+Expected: both wait and readiness options are available; the readiness wait reports its match without a duplicate readiness notification; the terminal wait reports exit code 7 without a duplicate completion notification. The wait operation succeeds, but the command did not. This smoke test is explicitly blocking; the ordinary asynchronous overlay flow below should remain responsive.
+
 ## `/ps` overlay
 
 Use `test/prompts/ps-overlay-qa.md` as the prompt to send to the agent when validating the stripped-down UI in Pi.
