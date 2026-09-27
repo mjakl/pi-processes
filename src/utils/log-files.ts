@@ -2,13 +2,13 @@ import {
   close as closeFile,
   closeSync,
   fstatSync,
-  ftruncate,
   openSync,
   read as readFile,
   readSync,
   statSync,
   write as writeFile,
 } from "node:fs";
+import { rename, writeFile as replaceFile, unlink } from "node:fs/promises";
 import { StringDecoder } from "node:string_decoder";
 
 export interface BoundedLogOptions {
@@ -31,6 +31,9 @@ interface CombinedStreamState {
 
 export class BoundedLogFile {
   private size: number;
+  // Logical position of file byte zero; a marker covers discarded positions.
+  private baseOffset = 0;
+  private markerBytes = 0;
   private fd: number | null;
   private acceptingWrites = true;
   private failure: Error | null = null;
@@ -38,7 +41,7 @@ export class BoundedLogFile {
   private closePromise: Promise<void> | null = null;
 
   constructor(
-    filePath: string,
+    private readonly filePath: string,
     private readonly options: BoundedLogOptions,
   ) {
     this.size = statSync(filePath).size;
@@ -69,6 +72,50 @@ export class BoundedLogFile {
   async flush(): Promise<void> {
     await this.queue;
     if (this.failure) throw this.failure;
+  }
+
+  /** Serialize reads with writes so file contents and logical positions agree. */
+  private read<T>(reader: () => T): Promise<T> {
+    const operation = this.queue.then(() => {
+      if (this.failure) throw this.failure;
+      return reader();
+    });
+    this.queue = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
+  }
+
+  readLinesFrom(
+    offset: number,
+    maxBytes: number,
+    options: { preferNewest?: boolean } = {},
+  ): Promise<LogReadResult | null> {
+    return this.read(() => {
+      const retainedStart = this.baseOffset + this.markerBytes;
+      const result = readLinesFrom(
+        this.filePath,
+        Math.max(offset, retainedStart) - this.baseOffset,
+        maxBytes,
+        options,
+      );
+      return (
+        result && {
+          ...result,
+          nextOffset: result.nextOffset + this.baseOffset,
+          endOffset: result.endOffset + this.baseOffset,
+          skipped: result.skipped || offset < retainedStart,
+        }
+      );
+    });
+  }
+
+  readTailLines(
+    lineLimit: number,
+    byteLimit: number,
+  ): Promise<string[] | null> {
+    return this.read(() => readTailLines(this.filePath, lineLimit, byteLimit));
   }
 
   close(): Promise<void> {
@@ -110,6 +157,7 @@ export class BoundedLogFile {
     const existingStart = Math.max(0, this.size - existingBytes);
     const existingTail = await readFdTail(fd, existingBytes, this.size);
     let replacement = Buffer.concat([existingTail, inputTail]);
+    let markerBytes = 0;
 
     const startsAtLineBoundary =
       existingBytes > 0
@@ -129,6 +177,7 @@ export class BoundedLogFile {
           this.options.truncationMarker ?? DEFAULT_TRUNCATION_MARKER,
         );
         const contentBytes = Math.max(0, retainBytes - marker.length);
+        markerBytes = Math.min(marker.length, retainBytes);
         replacement = Buffer.concat([
           marker.subarray(0, retainBytes),
           utf8SafeTail(replacement, contentBytes),
@@ -136,8 +185,20 @@ export class BoundedLogFile {
       }
     }
 
-    await truncateFileAsync(fd, 0);
-    await writeAll(fd, replacement);
+    // Atomic replacement also keeps file-backed /ps readers from seeing an
+    // empty or partially rewritten log. The queue protects cursor metadata.
+    const temporaryPath = `${this.filePath}.rotate`;
+    try {
+      await replaceFile(temporaryPath, replacement, { mode: 0o600 });
+      await rename(temporaryPath, this.filePath);
+    } finally {
+      await unlink(temporaryPath).catch(() => {});
+    }
+    this.fd = null;
+    await closeFileAsync(fd);
+    this.fd = openSync(this.filePath, "a+", 0o600);
+    this.baseOffset += this.size + input.length - replacement.length;
+    this.markerBytes = markerBytes;
     this.size = replacement.length;
   }
 }
@@ -200,6 +261,13 @@ export class CombinedLogWriter {
     return this.output.flush();
   }
 
+  readTailLines(
+    lineLimit: number,
+    byteLimit: number,
+  ): Promise<string[] | null> {
+    return this.output.readTailLines(lineLimit, byteLimit);
+  }
+
   private appendText(
     stream: CombinedStream,
     text: string,
@@ -237,7 +305,7 @@ export interface LogReadResult {
    * so a line that is still being written is re-read once it is complete.
    */
   nextOffset: number;
-  /** File size this read observed; unchanged size means nothing was written. */
+  /** Observed end position; writer-owned reads use logical, unrotated offsets. */
   endOffset: number;
   /** Whether output between the requested offset and the returned lines was skipped. */
   skipped: boolean;
@@ -246,7 +314,7 @@ export interface LogReadResult {
 /**
  * Read forward from a byte offset. Callers keep the returned `nextOffset` to
  * read only what is new, which stays correct while a line grows across writes
- * and while the bounded log rewrites itself.
+ * on an append-only file. For rotating logs, use BoundedLogFile.readLinesFrom.
  *
  * A read never returns more than `maxBytes`. With `preferNewest`, a larger
  * backlog is skipped so the newest output is returned; otherwise the read stops
@@ -265,8 +333,8 @@ export function readLinesFrom(
 
     let start = Math.max(0, offset);
     let skipped = false;
-    // The bounded log trims itself by rewriting the file, which moves earlier
-    // content out from under the offset.
+    // External truncation can invalidate a raw file offset. Managed rotations
+    // use writer-owned logical positions instead.
     if (start > size) {
       start = 0;
       skipped = true;
@@ -461,15 +529,6 @@ function writeFileAsync(
     writeFile(fd, buffer, offset, length, null, (error, bytesWritten) => {
       if (error) reject(error);
       else resolve(bytesWritten);
-    });
-  });
-}
-
-function truncateFileAsync(fd: number, length: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    ftruncate(fd, length, (error) => {
-      if (error) reject(error);
-      else resolve();
     });
   });
 }

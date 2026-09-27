@@ -251,6 +251,67 @@ describe("ProcessManager (real processes)", () => {
     }
   }, 20000);
 
+  it("keeps incremental reads and waits correct during real stream rotation", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "pi-process-rotation-"));
+    const manager = new ProcessManager();
+    try {
+      writeFileSync(
+        join(cwd, "producer.mjs"),
+        `
+        import { existsSync } from 'node:fs';
+        const chunk = Buffer.from(('x'.repeat(63) + '\\n').repeat(1024));
+        const write = (data) => new Promise((resolve) => process.stdout.write(data, resolve));
+        for (let i = 0; i < 64; i++) {
+          const data = Buffer.from(chunk);
+          if (i === 63) data.write('BASELINE\\n', data.length - 64);
+          await write(data);
+        }
+        while (!existsSync('continue')) await new Promise((resolve) => setTimeout(resolve, 10));
+        for (let i = 0; i < 17; i++) {
+          const data = Buffer.from(chunk);
+          if (i === 16) data.write('ROTATED READY\\n', data.length - 64);
+          await write(data);
+        }
+      `,
+      );
+      const proc = manager.start(
+        "rotating",
+        `${JSON.stringify(process.execPath)} producer.mjs`,
+        cwd,
+      );
+      expect(
+        await manager.waitFor(proc.id, {
+          until: "output",
+          pattern: "BASELINE",
+          timeoutMs: 5000,
+        }),
+      ).toMatchObject({ reason: "matched" });
+      await manager.readAgentOutput(proc.id, 100);
+      const pending = manager.waitFor(proc.id, {
+        until: "output",
+        pattern: "ROTATED READY",
+        timeoutMs: 5000,
+      });
+      await delay(250);
+      writeFileSync(join(cwd, "continue"), "");
+      expect(await pending).toMatchObject({
+        reason: "matched",
+        line: "ROTATED READY",
+        outputGap: false,
+      });
+      await manager.waitFor(proc.id, { until: "exit", timeoutMs: 5000 });
+      expect((await manager.readAgentOutput(proc.id, 100))?.stdout).toContain(
+        "ROTATED READY",
+      );
+      expect((await manager.readAgentOutput(proc.id, 100))?.hasNewOutput).toBe(
+        false,
+      );
+    } finally {
+      manager.cleanup();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 20000);
+
   it("scans a backlog instead of only its newest lines", async () => {
     const manager = new ProcessManager();
     try {

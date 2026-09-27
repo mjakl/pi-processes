@@ -80,6 +80,8 @@ export type ResolveProcessResult =
 export type WaitUntil = "exit" | "output";
 
 export type WaitOutcome = {
+  /** Unread output was discarded before the pattern scanner could inspect it. */
+  outputGap?: boolean;
   completionSummaryFile?: string;
   readinessPattern?: string;
 } & (
@@ -154,6 +156,7 @@ export interface ProcessesDetails {
   wait?: {
     reason: "exited" | "matched" | "timeout";
     waitedSeconds: number;
+    outputGap?: boolean;
     line?: string;
     stream?: "stdout" | "stderr";
   };
