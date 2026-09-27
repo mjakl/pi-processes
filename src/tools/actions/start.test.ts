@@ -185,6 +185,44 @@ describe("executeStart", () => {
     expect(manager.start).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "pnpm exec setsid sleep 30",
+    "npm exec -- setsid sleep 30",
+    "npx --no-install gunicorn --daemon app:server",
+    "pnpm exec docker run -d nginx",
+    "env corepack pnpm --dir 'some directory' exec docker compose up -d",
+    "npm exec --package tool -- docker run --detach nginx",
+    "npx --cache 'some directory' -p tool docker run -d nginx",
+  ])("rejects detached package executions before spawning: %s", (command) => {
+    const manager = { start: vi.fn() };
+    const result = executeStart(
+      { name: "test", command },
+      manager as never,
+      { cwd: process.cwd() } as never,
+    );
+    expect(result.details.success).toBe(false);
+    expect(manager.start).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "pnpm exec sleep 30",
+    "npm exec -- echo setsid --detach",
+    "npx --package setsid echo --detach",
+    "env pnpm --dir setsid exec docker run nginx",
+    "pnpm exec docker run alpine echo --detach",
+    "npx --no-install gunicorn app:server",
+    "npm exec --package setsid -- docker compose up",
+  ])("accepts foreground package executions: %s", (command) => {
+    const manager = { start: vi.fn(() => fakeProcess()) };
+    const result = executeStart(
+      { name: "test", command },
+      manager as never,
+      { cwd: process.cwd() } as never,
+    );
+    expect(result.details.success).toBe(true);
+    expect(manager.start).toHaveBeenCalledOnce();
+  });
+
   it("surfaces a duplicate live name as an actionable failure", () => {
     const manager = {
       start: vi.fn().mockImplementation(() => {

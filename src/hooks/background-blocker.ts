@@ -53,9 +53,12 @@ const PACKAGE_MANAGER_OPTIONS_WITH_VALUE = new Set([
   "--prefix",
   "--registry",
   "--userconfig",
+  "--node-options",
+  "--script-shell",
   "--workspace",
 ]);
 const PACKAGE_EXEC_OPTIONS_WITH_VALUE = new Set([
+  ...PACKAGE_MANAGER_OPTIONS_WITH_VALUE,
   "-c",
   "--call",
   "-p",
@@ -498,6 +501,7 @@ function stripPackageManagerOptions(args: string[]): string[] {
     const arg = args[index];
     if (arg === "--") return args.slice(index + 1);
     if (!arg.startsWith("-")) break;
+    if (NON_EXECUTING_INFO_FLAGS.has(arg)) return [];
 
     const option = arg.toLowerCase().split("=", 1)[0];
     const consumesValue =
@@ -520,6 +524,7 @@ function getExecutableAfterOptions(
       break;
     }
     if (!arg.startsWith("-")) break;
+    if (NON_EXECUTING_INFO_FLAGS.has(arg)) return undefined;
 
     const option = arg.toLowerCase().split("=", 1)[0];
     const consumesValue = optionsWithValue.has(option) && !arg.includes("=");
@@ -545,6 +550,7 @@ function getWrapperCommandString(words: string[]): string | undefined {
     for (let index = start; index < invocation.length; index++) {
       const arg = invocation[index];
       if (arg === "--" || !arg.startsWith("-")) return undefined;
+      if (NON_EXECUTING_INFO_FLAGS.has(arg)) return undefined;
       if (arg === "-c" || arg === "--call") return invocation[index + 1];
       if (arg.startsWith("-c=")) return arg.slice("-c=".length);
       if (arg.startsWith("--call=")) return arg.slice("--call=".length);
@@ -601,6 +607,20 @@ function quoteShellWord(value: string): string {
 function unwrapCommand(words: string[]): string[] | undefined {
   const name = basename(words[0]).toLowerCase();
   const args = words.slice(1);
+
+  if (PACKAGE_MANAGERS.has(name) || PACKAGE_EXECUTORS.has(name)) {
+    const invocation = PACKAGE_MANAGERS.has(name)
+      ? stripPackageManagerOptions(args)
+      : args;
+    if (PACKAGE_MANAGERS.has(name) && invocation[0]?.toLowerCase() !== "exec") {
+      return undefined;
+    }
+    const executable = getExecutableAfterOptions(
+      invocation,
+      PACKAGE_MANAGERS.has(name) ? 1 : 0,
+    );
+    return executable ? [executable.name, ...executable.args] : undefined;
+  }
 
   if (hasNonExecutingInfoFlag(args)) return undefined;
   if (name === "uv" || name === "poetry") {

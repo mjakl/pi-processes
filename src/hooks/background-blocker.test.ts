@@ -58,6 +58,38 @@ describe("analyzeBackgroundCommand", () => {
     }
   });
 
+  it.each([
+    "pnpm exec setsid sleep 30",
+    "npm exec -- setsid sleep 30",
+    "npx --no-install gunicorn --daemon app:server",
+    "env FOO=bar corepack pnpm --dir 'some directory' exec -- setsid sleep 30",
+    "npm --prefix 'some directory' exec --package tool -- setsid sleep 30",
+    "npx --package=tool --cache 'some directory' -- setsid sleep 30",
+    "bunx --bun gunicorn --daemon app:server",
+    "yarn exec setsid sleep 30",
+  ])("detects package executor detachment: %s", (command) => {
+    expect(analyzeBackgroundCommand(command)).toBeDefined();
+  });
+
+  it.each([
+    "pnpm exec echo setsid --detach",
+    "npm exec --package setsid -- echo --detach",
+    "npx -p setsid echo setsid",
+    "npx --cache setsid echo --detach",
+    "npm --prefix setsid exec echo ok",
+    "pnpm --filter setsid exec echo ok",
+    "pnpm run setsid",
+    "npx --package tool -c 'echo setsid --detach'",
+    "npx --package setsid --help",
+    "npx --help setsid",
+    "pnpm --help exec setsid",
+    "pnpm exec echo 'setsid sleep 30'",
+    "npx --node-options setsid echo --detach",
+    "pnpm exec docker compose up -d",
+  ])("does not mistake package values or arguments for commands: %s", (command) => {
+    expect(analyzeBackgroundCommand(command)).toBeUndefined();
+  });
+
   it("leaves foreground commands alone, however long they run", () => {
     for (const command of [
       "pnpm dev",
