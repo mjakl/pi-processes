@@ -283,6 +283,11 @@ export class ProcessManager {
     readiness?: { pattern: string; timeoutMs: number },
     completionSummaryFile?: string,
   ): ProcessInfo {
+    if (/^proc_\d+$/i.test(name.trim())) {
+      throw new Error(
+        `Names matching proc_<digits> are reserved for process IDs; choose a different name`,
+      );
+    }
     const live = [...this.processes.values()].filter((process) =>
       LIVE_STATUSES.has(process.status),
     );

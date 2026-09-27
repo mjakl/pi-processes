@@ -5,9 +5,9 @@ import { executeList } from "./list";
 function processInfo(index: number): ProcessInfo {
   return {
     id: `proc_${index}`,
-    name: `process-${index}`,
+    name: `process-${index}-${'\\"🔥'.repeat(100)}`,
     pid: 1000 + index,
-    command: '\\"'.repeat(1000),
+    command: '\\"🔥'.repeat(1000),
     cwd: `/tmp/${'\\"'.repeat(1000)}-${index}`,
     startTime: index,
     endTime: index + 1,
@@ -20,6 +20,27 @@ function processInfo(index: number): ProcessInfo {
 }
 
 describe("executeList", () => {
+  it("includes the oldest live process behind 31 finished records", () => {
+    const oldest = {
+      ...processInfo(1),
+      name: "server",
+      status: "running",
+      endTime: null,
+      success: null,
+    };
+    const processes = [
+      ...Array.from({ length: 31 }, (_, i) => processInfo(32 - i)),
+      oldest,
+    ];
+    const result = executeList({ list: () => processes } as never);
+    expect(result.details.processes).toHaveLength(32);
+    expect(result.details.totalProcesses).toBe(32);
+    expect(result.details.processes?.map((p) => p.id)).toEqual(
+      processes.map((p) => p.id),
+    );
+    expect(result.content[0].text).toContain('proc_1 "server"');
+  });
+
   it("bounds process details and reports omitted entries", () => {
     const processes = Array.from({ length: 150 }, (_, index) =>
       processInfo(index + 1),
@@ -28,8 +49,8 @@ describe("executeList", () => {
 
     const result = executeList(manager as never);
 
-    expect(result.details.processes).toHaveLength(30);
-    expect(result.details.message).toContain("Showing 30 of 150 process(es)");
+    expect(result.details.processes).toHaveLength(32);
+    expect(result.details.message).toContain("Showing 32 of 150 process(es)");
     expect(
       Buffer.byteLength(result.details.processes?.[0]?.command ?? ""),
     ).toBeLessThanOrEqual(192);

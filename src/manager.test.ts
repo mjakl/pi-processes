@@ -746,6 +746,37 @@ describe("ProcessManager", () => {
     });
   });
 
+  it.each([
+    "proc_1",
+    "proc_2",
+    "proc_999999",
+    "PROC_1",
+    " PrOc_002 ",
+  ])("reserves ID-shaped names before allocating logs or spawning: %s", (name) => {
+    const database = manager.start("database", "sleep 30", process.cwd());
+    const before = readdirSync(dirname(database.stdoutFile));
+    expect(() => manager.start(name, "sleep 30", process.cwd())).toThrow(
+      /reserved.*choose a different name/i,
+    );
+    expect(mocks.spawnCommand).toHaveBeenCalledTimes(1);
+    expect(readdirSync(dirname(database.stdoutFile))).toEqual(before);
+    expect(manager.resolve(database.id)).toMatchObject({
+      ok: true,
+      info: database,
+    });
+    const next = manager.start("ordinary", "sleep 30", process.cwd());
+    expect(next.id).toBe("proc_2");
+  });
+
+  it("rejects an ID-shaped first name without allocating a log directory", () => {
+    expect(() => manager.start(" PROC_0 ", "fake", process.cwd())).toThrow(
+      /reserved/,
+    );
+    expect(mocks.spawnCommand).not.toHaveBeenCalled();
+    expect((manager as unknown as { logDir: string | null }).logDir).toBeNull();
+    expect(manager.start("proc_test", "fake", process.cwd()).id).toBe("proc_1");
+  });
+
   it("refuses a second live process with the same name", () => {
     manager.start("server", "pnpm dev", process.cwd());
 

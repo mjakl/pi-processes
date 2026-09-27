@@ -8,7 +8,7 @@ import {
 } from "../../utils";
 import { compactProcessInfo } from "../process-details";
 
-const MAX_LISTED_PROCESSES = 30;
+const MAX_LISTED_PROCESSES = 32;
 
 export function executeList(manager: ProcessManager): ExecuteResult {
   const allProcesses = manager.list();
