@@ -171,6 +171,7 @@ describe("process tool contract", () => {
         info: {
           id: "proc_1",
           name: "server",
+          command: "pnpm dev",
           status: "running",
           startTime: Date.now(),
           endTime: null,
@@ -375,6 +376,51 @@ describe("process tool contract", () => {
     expect(logs).toContain("/tmp/combined.log");
     expect(logs).toContain("/tmp/stdoutinjected.log");
     expect(logs).not.toContain("\u001b");
+  });
+
+  it("renders historical 30-record lists and waits with reserved-looking names", () => {
+    const tool = captureTool({} as ProcessManager);
+    const theme = { fg: (_color: string, text: string) => text };
+    const render = (details: Record<string, unknown>) =>
+      tool
+        .renderResult(
+          { content: [], details },
+          { expanded: true, isPartial: false },
+          theme,
+        )
+        .render(100)
+        .join("\n");
+    const list = render({
+      action: "list",
+      success: true,
+      message: "Showing 30 of 32 process(es)",
+      totalProcesses: 32,
+      processes: Array.from({ length: 30 }, (_, i) => ({
+        id: `proc_${i + 1}`,
+        name: "PROC_999",
+        command: "echo old",
+        status: "exited",
+        success: true,
+        exitCode: 0,
+        startTime: 0,
+        endTime: 1000,
+      })),
+    });
+    expect(list).toContain("Showing 30 of 32 process(es)");
+    expect(list).toContain("PROC_999");
+    const wait = render({
+      action: "wait",
+      success: true,
+      message: '"proc_1" (proc_2) matched READY',
+      wait: {
+        reason: "matched",
+        waitedSeconds: 1,
+        line: "READY🔥",
+        stream: "stdout",
+      },
+    });
+    expect(wait).toContain("proc_1");
+    expect(wait).toContain("READY🔥");
   });
 
   it("does not dispatch an already-aborted action", async () => {

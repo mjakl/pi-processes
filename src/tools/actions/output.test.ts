@@ -165,6 +165,24 @@ describe("executeOutput", () => {
     expect(JSON.stringify(result.details)).not.toContain("�");
   });
 
+  it.each([
+    "empty",
+    "short",
+    "oversized",
+  ])("discloses skipped or rotated output with %s content", async (kind) => {
+    const stdout =
+      kind === "empty"
+        ? []
+        : [kind === "short" ? "new line" : "x".repeat(100_000)];
+    const result = await executeOutput(
+      { id: "proc_1" },
+      fakeManager(read({ stdout, droppedEarlier: true })) as never,
+    );
+    expect(textOf(result)).toContain("discarded by rotation");
+    expect(textOf(result)).toContain("logs contain only retained output");
+    expect(textOf(result)).not.toContain("all of it");
+  });
+
   it("uses the latest process status after awaiting log flush", async () => {
     const exited: ProcessInfo = {
       ...processInfo,

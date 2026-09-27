@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { ProcessInfo, WaitOutcome } from "../../constants";
 import { executeWait } from "./wait";
@@ -30,6 +33,18 @@ function fakeManager(outcome: WaitOutcome | null) {
     resolve: vi.fn(() => ({ ok: true, info: running })),
     waitFor: vi.fn(async () => outcome),
     getCombinedOutput: vi.fn(),
+    getLogFiles: vi.fn(
+      () =>
+        ({
+          stdoutFile: running.stdoutFile,
+          stderrFile: running.stderrFile,
+          combinedFile: "/tmp/combined.log",
+        }) as {
+          stdoutFile: string;
+          stderrFile: string;
+          combinedFile: string;
+        } | null,
+    ),
     list: vi.fn(() => [running]),
   } as const;
 }
@@ -128,6 +143,80 @@ describe("executeWait", () => {
     );
 
     expect(result.details.message).toContain('without printing "listening on"');
+  });
+
+  it.each([
+    true,
+    false,
+  ])("bounds UTF-8 matching lines and serialized details (logs retained: %s)", async (retained) => {
+    const line = `READY ${'\\"🔥'.repeat(100_000)}`;
+    const manager = fakeManager({
+      reason: "matched",
+      info: { ...exited, name: "🔥".repeat(30_000) },
+      line,
+      stream: "stdout",
+      recentOutput: [{ type: "stdout", text: line }],
+    });
+    if (!retained) manager.getLogFiles.mockReturnValue(null);
+    const result = await executeWait(
+      { id: "server", until: "output", pattern: "READY" },
+      manager as never,
+    );
+    expect(Buffer.byteLength(textOf(result))).toBeLessThanOrEqual(50 * 1024);
+    expect(Buffer.byteLength(result.details.message)).toBeLessThanOrEqual(2048);
+    expect(
+      Buffer.byteLength(result.details.wait?.line ?? ""),
+    ).toBeLessThanOrEqual(500);
+    expect(Buffer.byteLength(JSON.stringify(result.details))).toBeLessThan(
+      8 * 1024,
+    );
+    expect(JSON.stringify(result)).not.toContain("�");
+    expect(textOf(result)).toContain("failed with exit code 1");
+    expect(textOf(result)).toContain("matched");
+    expect(textOf(result)).toContain("Wait result truncated");
+    expect(textOf(result).includes("/tmp/stdout.log")).toBe(retained);
+    expect(result.details.success).toBe(true);
+  });
+
+  it("caps a completed summary including the notice without hiding termination", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wait-summary-"));
+    try {
+      const file = join(dir, "summary.txt");
+      writeFileSync(file, `${"🔥".repeat(128)}\n`.repeat(128));
+      const manager = fakeManager({
+        reason: "exited",
+        info: { ...exited, status: "killed" },
+        completionSummaryFile: file,
+        recentOutput: [],
+      });
+      const result = await executeWait({ id: "server" }, manager as never);
+      expect(Buffer.byteLength(textOf(result))).toBeLessThanOrEqual(50 * 1024);
+      expect(textOf(result)).toContain("was terminated");
+      expect(textOf(result)).toContain("Wait result truncated");
+      expect(textOf(result)).not.toContain("�");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    "exited",
+    "timeout",
+  ] as const)("discloses incomplete pattern coverage on %s", async (reason) => {
+    const manager = fakeManager({
+      reason,
+      info: reason === "exited" ? exited : running,
+      recentOutput: [],
+      outputGap: true,
+    });
+    const result = await executeWait(
+      { id: "server", until: "output", pattern: "LOST" },
+      manager as never,
+    );
+    expect(textOf(result)).toContain("Output coverage gap");
+    expect(textOf(result)).not.toContain("without printing");
+    expect(textOf(result)).not.toContain("did not print");
+    expect(result.details.wait?.outputGap).toBe(true);
   });
 
   it("aborts when the wait is cancelled", async () => {

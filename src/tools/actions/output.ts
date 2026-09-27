@@ -107,7 +107,12 @@ export async function executeOutput(
 
   const fullText = outputParts.join("\n");
   const { maxOutputLines } = configLoader.getConfig().output;
-  const contentText = truncateTail(fullText, logFiles, maxOutputLines);
+  const contentText = truncateTail(
+    fullText,
+    logFiles,
+    maxOutputLines,
+    output.droppedEarlier,
+  );
 
   const outputPreview = {
     status: latestProc.status,
@@ -135,20 +140,20 @@ export async function executeOutput(
 
 function summarize(proc: ProcessInfo, output: AgentOutputRead): string {
   const header = `"${sanitizeLine(proc.name)}" (${proc.id}) [${formatStatus(proc)}]`;
+  const dropped = output.droppedEarlier
+    ? " (earlier output skipped or discarded by rotation; logs contain only retained output)"
+    : "";
   if (output.hasNewOutput) {
     const scope = output.firstRead ? "" : " new";
-    const dropped = output.droppedEarlier
-      ? " (earlier output skipped; read the log files for all of it)"
-      : "";
     return `${header}: ${output.newStdoutLines}${scope} stdout lines, ${output.newStderrLines}${scope} stderr lines${dropped}`;
   }
   if (output.firstRead) {
-    return `${header}: no output yet`;
+    return `${header}: no output yet${dropped}`;
   }
   const since = output.previousReadAt
     ? ` since your last check ${Math.max(0, Math.round((Date.now() - output.previousReadAt) / 1000))}s ago`
     : " since your last check";
-  return `${header}: no new output${since}`;
+  return `${header}: no new output${since}${dropped}`;
 }
 
 /** Point at the event-driven path instead of encouraging another check. */
@@ -172,7 +177,7 @@ function waitHint(
 /**
  * Truncate text from the tail (keep last N lines / MAX_BYTES), matching
  * the behaviour of pi's built-in bash tool.  When truncated, appends a
- * notice pointing the agent to the full log files.
+ * notice pointing the agent to the retained log files.
  */
 function truncateTail(
   text: string,
@@ -182,6 +187,7 @@ function truncateTail(
     combinedFile: string;
   } | null,
   maxLines: number,
+  droppedEarlier: boolean,
 ): string {
   const totalBytes = Buffer.byteLength(text, "utf-8");
   const lines = text.split("\n");
@@ -199,6 +205,7 @@ function truncateTail(
     totalLines,
     hitBytes,
     logFiles,
+    droppedEarlier,
   );
 
   while (kept.length > 0) {
@@ -206,7 +213,13 @@ function truncateTail(
     if (Buffer.byteLength(candidate, "utf8") <= MAX_BYTES) return candidate;
     kept.shift();
     hitBytes = true;
-    notice = buildTruncationNotice(kept.length, totalLines, hitBytes, logFiles);
+    notice = buildTruncationNotice(
+      kept.length,
+      totalLines,
+      hitBytes,
+      logFiles,
+      droppedEarlier,
+    );
   }
 
   return truncateUtf8Bytes(notice, MAX_BYTES, "");
@@ -221,6 +234,7 @@ function buildTruncationNotice(
     stderrFile: string;
     combinedFile: string;
   } | null,
+  droppedEarlier: boolean,
 ): string {
   const sizeNote = hitBytes ? ` (${formatSize(MAX_BYTES)} limit)` : "";
   const range =
@@ -228,6 +242,9 @@ function buildTruncationNotice(
       ? `Showing lines ${totalLines - shownLines + 1}-${totalLines} of ${totalLines}`
       : `Output omitted; ${totalLines} lines total`;
   let notice = `[${range}${sizeNote}.`;
+  if (droppedEarlier)
+    notice +=
+      " Earlier output skipped or discarded by rotation; logs contain only retained output.";
   if (logFiles) {
     notice += ` Retained logs: ${logFiles.stdoutFile} , ${logFiles.stderrFile}`;
   }

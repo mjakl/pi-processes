@@ -5,11 +5,8 @@ import {
   type WaitUntil,
 } from "../../constants";
 import type { ProcessManager } from "../../manager";
-import { formatStatus, sanitizeLine, truncateCmd } from "../../utils";
-import {
-  buildCompletionReport,
-  formatRecentOutput,
-} from "../../utils/completion-report";
+import { formatStatus, sanitizeLine, truncateUtf8Bytes } from "../../utils";
+import { buildCompletionReport } from "../../utils/completion-report";
 import {
   formatAmbiguousProcessMessage,
   formatUnknownProcessMessage,
@@ -17,6 +14,9 @@ import {
 
 export const DEFAULT_WAIT_SECONDS = 60;
 export const MAX_WAIT_SECONDS = 1800;
+const MAX_CONTENT_BYTES = 50 * 1024;
+const MAX_MESSAGE_BYTES = 2048;
+const MAX_PREVIEW_BYTES = 500;
 
 interface WaitParams {
   id?: string;
@@ -62,21 +62,46 @@ export async function executeWait(
     throw error;
   }
 
+  let previewTruncated = false;
+  const preview = (value: string, bytes = MAX_PREVIEW_BYTES) => {
+    const sanitized = sanitizeLine(value);
+    const bounded = truncateUtf8Bytes(sanitized, bytes);
+    previewTruncated ||= bounded !== sanitized;
+    return bounded;
+  };
+  const info = {
+    ...outcome.info,
+    id: preview(outcome.info.id, 128),
+    name: preview(outcome.info.name, 96),
+    command: preview(outcome.info.command, 160),
+  };
+  const boundedOutcome = {
+    ...outcome,
+    info,
+    ...(outcome.reason === "matched" ? { line: preview(outcome.line) } : {}),
+  } as Exclude<WaitOutcome, { reason: "cancelled" }>;
+  const recent =
+    outcome.recentOutput?.map((line) => ({
+      ...line,
+      text: preview(line.text),
+    })) ?? null;
   const waitedSeconds = Math.round((Date.now() - startedAt) / 1000);
   const completed =
     outcome.reason !== "timeout" && !LIVE_STATUSES.has(outcome.info.status);
   const report = completed
     ? await buildCompletionReport(
-        outcome.info,
-        outcome.recentOutput,
+        info,
+        recent,
         outcome.completionSummaryFile,
-        outcome.readinessPattern,
+        outcome.readinessPattern
+          ? preview(outcome.readinessPattern)
+          : undefined,
       )
     : undefined;
   const waitCondition = describeCondition(
-    outcome,
+    boundedOutcome,
     until,
-    params.pattern,
+    preview(params.pattern ?? ""),
     waitedSeconds,
   );
   const summary = report
@@ -84,23 +109,57 @@ export async function executeWait(
         .filter(Boolean)
         .join(" ")
     : waitCondition;
-  // Preserve the output-wait condition in addition to the shared terminal report.
+  const gap = outcome.outputGap
+    ? "Output coverage gap: unread bytes were discarded by log rotation. The pattern may have appeared in discarded output; logs contain only retained output."
+    : "";
+  // Put the outcome before the body so truncation cannot hide command failure
+  // or the output-wait condition. Summary file reading remains shared.
+  const body = report
+    ? report.slice(report.indexOf("\n") + 1)
+    : recent === null
+      ? "Recent output unavailable because process logs could not be read."
+      : recent.length > 0
+        ? `Recent output:\n${recent.map((line) => `${line.type}: ${line.text}`).join("\n")}`
+        : "";
   const content = report
-    ? report + (until === "output" ? `\n\n${waitCondition}` : "")
-    : [summary, ...formatRecentOutput(outcome.recentOutput)].join("\n");
+    ? [summary, gap, body].filter(Boolean).join("\n")
+    : [summary, gap, body].filter(Boolean).join("\n\n");
+  const truncated =
+    previewTruncated || Buffer.byteLength(content) > MAX_CONTENT_BYTES;
+  // A wait may retire its record and delete logs before returning. Never
+  // resurrect paths from outcome.info or retain logs just for this notice.
+  const logs = truncated ? manager.getLogFiles(outcome.info.id) : null;
+  const notice = truncated
+    ? `\n\n[Wait result truncated (50 KiB content limit; bounded previews).${logs ? ` Retained logs: ${logs.stdoutFile} , ${logs.stderrFile}` : " Process logs are no longer retained."}]`
+    : "";
+  const boundedNotice = truncateUtf8Bytes(notice, 4096);
+  const contentText =
+    truncateUtf8Bytes(
+      content,
+      MAX_CONTENT_BYTES - Buffer.byteLength(boundedNotice),
+    ) + boundedNotice;
 
   return {
-    content: [{ type: "text", text: content }],
+    content: [{ type: "text", text: contentText }],
     details: {
       action: "wait",
       success: true,
-      message: summary,
+      message: truncateUtf8Bytes(
+        [summary, gap, truncated ? "[Wait result truncated]" : ""]
+          .filter(Boolean)
+          .join(" "),
+        MAX_MESSAGE_BYTES,
+      ),
       wait: {
         reason: outcome.reason,
         waitedSeconds,
+        ...(outcome.outputGap ? { outputGap: true } : {}),
         ...(outcome.reason === "matched"
           ? {
-              line: truncateCmd(sanitizeLine(outcome.line), 500),
+              line: truncateUtf8Bytes(
+                sanitizeLine(outcome.line),
+                MAX_PREVIEW_BYTES,
+              ),
               stream: outcome.stream,
             }
           : {}),
@@ -119,21 +178,26 @@ function describeCondition(
   const name = `"${sanitizeLine(info.name)}" (${info.id})`;
 
   if (outcome.reason === "matched") {
-    return `${name} matched "${sanitizeLine(pattern ?? "")}" after ${waitedSeconds}s on ${outcome.stream}: ${truncateCmd(sanitizeLine(outcome.line), 500)}`;
+    return `${name} matched "${sanitizeLine(pattern ?? "")}" after ${waitedSeconds}s on ${outcome.stream}: ${outcome.line}`;
   }
 
   if (outcome.reason === "exited") {
-    return `Wait ended without printing "${sanitizeLine(pattern ?? "")}".`;
+    return outcome.outputGap
+      ? `Wait ended without finding "${sanitizeLine(pattern ?? "")}" in scanned output.`
+      : `Wait ended without printing "${sanitizeLine(pattern ?? "")}".`;
   }
 
   const stillWaiting =
     until === "output"
-      ? `did not print "${sanitizeLine(pattern ?? "")}"`
+      ? outcome.outputGap
+        ? `did not match "${sanitizeLine(pattern ?? "")}" in scanned output`
+        : `did not print "${sanitizeLine(pattern ?? "")}"`
       : "is still running";
   return `${name} ${stillWaiting} within ${waitedSeconds}s [${formatStatus(info)}]. Wait again if the result is still required, keeping timeoutSeconds within your available execution time, or stop it with process kill.`;
 }
 
 function failure(message: string): ExecuteResult {
+  message = truncateUtf8Bytes(message, MAX_MESSAGE_BYTES);
   return {
     content: [{ type: "text", text: message }],
     details: {

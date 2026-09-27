@@ -124,7 +124,7 @@ Actions:
 
 - `start` — start a managed process, optionally with one-shot readiness monitoring.
 - `wait` — in every mode, block until exit, matching output, or timeout.
-- `list` — list managed processes.
+- `list` — list all retained process records (at most 32), newest first.
 - `output` — return the output printed since the agent last looked.
 - `logs` — return file paths for stdout, stderr, and combined logs.
 - `kill` — terminate or force-kill a process.
@@ -147,13 +147,14 @@ process clear
 
 Field rules:
 
-- `start` requires `command` and `name`. A live process name must be unique; starting a second live process under the same name is rejected so lookups by name stay unambiguous.
-- A started command must remain in the foreground. Do not include `&`, `setsid`, `coproc`, detached container flags, or daemon-mode options; the manager supervises the foreground process group.
+- `start` requires `command` and `name`. A live process name must be unique, ignoring case. Names whose trimmed value matches `proc_<digits>` are reserved for IDs, ignoring case (for example, `proc_1` and `PROC_999`). Choose a different friendly name; invalid names are rejected before spawning or creating logs.
+- A started command must remain in the foreground. Do not include `&`, `setsid`, `coproc`, detached container flags, or daemon-mode options; the manager supervises the foreground process group. Validation also applies through package executors such as `pnpm exec`, `npm exec`, and `npx`. Package scripts are not inspected. This validation is mandatory even when bash interception is disabled.
 - In every mode, `start` accepts `readyPattern` and optional `readyTimeoutSeconds` (default 60, at most 1,800). `readyTimeoutSeconds` requires `readyPattern`. Matching is a case-insensitive substring across stdout and stderr. A match or timeout wakes the agent without stopping the process.
 - In every mode, `start` also accepts `completionSummaryFile`. Relative paths resolve from the process working directory. The process must create and manage this UTF-8 file. Completion notifications and completed waits use the same substantive report: process identity, command, success/failure/termination outcome, and summary or recent output. Each report reads the file once after the process ends; the file is not cached or managed by the extension.
-- Summary reports contain up to 128 sanitized lines, with each line limited to 512 UTF-8 bytes. When content is omitted, the last line is an omission marker. An unavailable, invalid, or empty summary produces an explicit fallback report with recent output. Both delivery paths apply the same bounds and sanitization. Wait timeouts and readiness results for a still-running process do not read the summary.
+- Summary reports contain up to 128 sanitized lines, with each line limited to 512 UTF-8 bytes. When content is omitted, the last line is an omission marker. An unavailable, invalid, or empty summary produces an explicit fallback report with recent output. Both delivery paths use the same summary extraction and sanitization; wait results also apply the total content cap below. Wait timeouts and readiness results for a still-running process do not read the summary.
 - `output`, `logs`, `kill`, and `wait` require `id`.
 - `wait` accepts `until` (`"exit"` by default, or `"output"` with a case-insensitive substring `pattern`) and `timeoutSeconds` (default 60, at most 1,800). A timeout or cancelled wait does not stop the process. A successful wait operation can report a failed or terminated command; inspect the command outcome.
+- Wait content is capped at 50 KiB, including truncation notices. Structured message and matching-line previews are separately UTF-8 byte-bounded. The outcome remains visible, including command failure or termination. Truncated results point to process logs only while the record is retained; waiting does not extend log lifetime.
 - `kill` accepts `force=true` to send `SIGKILL` instead of `SIGTERM`.
 
 ### Matching processes
@@ -162,6 +163,8 @@ For actions that accept `id`, it must be either:
 
 - the exact process ID, such as `proc_1`
 - the exact friendly process name, such as `backend-dev`
+
+IDs take precedence over friendly names. Friendly names match case-insensitively. Reusing a finished process's name can make a name lookup ambiguous; use an exact ID in that case. Records and output cursors live only in memory and are not restored from session history; historical tool results still render.
 
 A failed lookup names the known processes, so a mistyped id does not cost an extra `list` call.
 
@@ -188,7 +191,8 @@ Repeated `process list`, `process output`, or `process logs` calls just to check
 
 - `process output` returns what was printed since the agent's previous `output` call, and reports "no new output" instead of resending known lines.
 - `process logs` returns log file paths for deeper inspection and for the `/ps` overlay.
-- Each stdout, stderr, and combined log file keeps the latest output, up to 5 MiB. On overflow it trims to roughly 4 MiB so runaway output cannot grow without bound.
+- Each stdout, stderr, and combined log file keeps the latest output, up to 5 MiB. On overflow it trims to roughly 4 MiB so runaway output cannot grow without bound. Incremental reads and output waits track logical byte positions through rotations rather than relying on file size. Consumed complete lines are not replayed.
+- If rotation discards unread bytes, output resumes at retained content and reports a coverage gap. Output waits still scan retained unread bytes, but cannot rule out a pattern in discarded output. Logs are bounded tails, not a complete output archive.
 - A session retains at most 16 live processes and 32 total process records. At the total limit, a successful start evicts the oldest finished record and its logs; live records are never evicted. Use `process clear` to remove all finished records explicitly.
 - Use `output` and `logs` when the user asks, when debugging, or when investigating a specific problem.
 
@@ -196,7 +200,7 @@ Repeated `process list`, `process output`, or `process logs` calls just to check
 
 Whether a command runs for a long time cannot be decided from its name, so this extension does not try. Two mechanisms cover it instead:
 
-- Commands that **detach** from the session (`&`, `setsid`, `disown`, `gunicorn --daemon`, `ssh -f`, and the same through wrappers, shells, and command substitution) are blocked and routed to `process start`. Detached work cannot be supervised, logged, or stopped.
+- Commands that **detach** from the session (`&`, `setsid`, `disown`, `gunicorn --daemon`, `ssh -f`, and the same through wrappers, package executors, shells, and command substitution) are blocked and routed to `process start`. Remove the detaching syntax before starting a managed process. Package option values and ordinary command arguments are not treated as executables. Bash's existing allowance for detached container commands such as `docker compose up -d` is unchanged; `process start` rejects them because the managed command must remain in the foreground.
 - Every other bash command runs normally, but a bash call that sets no `timeout` of its own gets `interception.bashTimeoutSeconds`. If it is hit, the timeout message tells the agent to restart the work with the `process` tool. A timeout the agent chose itself is never overridden.
 
 Routing long work to the tool in the first place is the job of the tool description and the prompt guidelines, which the extension re-adds to the system prompt when a custom prompt would otherwise drop them.

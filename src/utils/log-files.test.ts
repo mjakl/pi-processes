@@ -88,6 +88,63 @@ describe("log file helpers", () => {
     expect(content).not.toContain("�");
   });
 
+  it.each([
+    2, 3, 4, 12,
+  ])("keeps logical cursors across %s rotating appends without replay", async (count) => {
+    const log = new BoundedLogFile(filePath, { maxBytes: 40, retainBytes: 24 });
+    writers.push(log);
+    await log.append("oldline\n".repeat(4));
+    const first = await log.readLinesFrom(0, 1024);
+    for (let i = 0; i < count; i++)
+      await log.append(`new-${i.toString().padStart(3, "0")}\n`);
+    const result = await log.readLinesFrom(first?.nextOffset ?? 0, 1024);
+    expect(result?.lines.length).toBeGreaterThan(0);
+    expect(result?.lines.every((line) => line.startsWith("new-"))).toBe(true);
+    expect(result?.lines.at(-1)).toBe(
+      `new-${(count - 1).toString().padStart(3, "0")}`,
+    );
+    expect(result?.endOffset).toBe(32 + count * 8);
+    expect(result?.skipped).toBe(count === 12);
+  });
+
+  it("serializes a read between queued rotations and preserves UTF-8 growing lines", async () => {
+    const log = new BoundedLogFile(filePath, {
+      maxBytes: 100,
+      retainBytes: 80,
+    });
+    writers.push(log);
+    const firstWrite = log.append(`${"old\n".repeat(30)}growing`);
+    const snapshot = log.readLinesFrom(0, 1024);
+    const emoji = Buffer.from("🔥");
+    const secondWrite = log.append(emoji.subarray(0, 2));
+    await firstWrite;
+    const first = await snapshot;
+    await secondWrite;
+    expect(first?.lines.at(-1)).toBe("growing");
+    expect(first?.skipped).toBe(true);
+    await log.append(Buffer.concat([emoji.subarray(2), Buffer.from("\n")]));
+    expect(await log.readLinesFrom(first?.nextOffset ?? 0, 1024)).toMatchObject(
+      {
+        lines: ["growing🔥"],
+        skipped: false,
+      },
+    );
+  });
+
+  it("reports lost bytes and omits synthetic rotation markers from cursor reads", async () => {
+    const log = new BoundedLogFile(filePath, {
+      maxBytes: 100,
+      retainBytes: 80,
+    });
+    writers.push(log);
+    await log.append("🔥".repeat(100));
+    const result = await log.readLinesFrom(0, 1024);
+    expect(result?.skipped).toBe(true);
+    expect(result?.endOffset).toBe(400);
+    expect(result?.lines.join("")).not.toContain("truncated");
+    expect(result?.lines.join("")).not.toContain("�");
+  });
+
   it("reads tail lines without requiring the whole file", () => {
     const prefix = `${"x".repeat(256)}\n`;
     writeFileSync(filePath, `${prefix}first\nsecond🔥\nthird\n`);
@@ -164,6 +221,26 @@ describe("log file helpers", () => {
     ).rejects.toBeDefined();
     await expect(writer.close()).rejects.toBeDefined();
     expect(output.fd).toBeNull();
+  });
+
+  it("never exposes an empty rewrite to file-backed viewers", async () => {
+    const log = new BoundedLogFile(filePath, {
+      maxBytes: 1024,
+      retainBytes: 768,
+    });
+    writers.push(log);
+    await log.append("old\n".repeat(256));
+    let done = false;
+    const rotation = log.append("new\n".repeat(256)).finally(() => {
+      done = true;
+    });
+    while (!done) {
+      const text = readFileSync(filePath, "utf8");
+      expect(text.length).toBeGreaterThan(0);
+      expect(text).toMatch(/^(old\n)+$|^(new\n)+$/);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    await rotation;
   });
 
   it("schedules large rotation work asynchronously", async () => {

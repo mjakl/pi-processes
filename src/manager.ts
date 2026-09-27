@@ -21,11 +21,10 @@ import { spawnCommand } from "./utils/command-executor";
 import {
   BoundedLogFile,
   CombinedLogWriter,
-  readLinesFrom as readLogLinesFrom,
   readTailLines as readLogTailLines,
 } from "./utils/log-files";
 
-/** Position of a log reader: what it consumed, and the size it last observed. */
+/** Logical byte positions remain stable when the writer discards old bytes. */
 interface LogCursor {
   offset: number;
   end: number;
@@ -34,7 +33,7 @@ interface LogCursor {
 type StreamName = "stdout" | "stderr";
 type StreamCursors = Record<StreamName, LogCursor>;
 /** Scanners only track what they consumed; they never skip ahead. */
-type ScanCursors = Record<StreamName, { offset: number }>;
+type ScanCursors = Record<StreamName, { offset: number; skipped: boolean }>;
 
 interface ReadinessStreamMatcher {
   decoder: StringDecoder;
@@ -84,6 +83,8 @@ interface ManagedProcess extends ProcessInfo {
   logError: boolean;
   closeWaiters: Set<() => void>;
   endWaiters: Set<() => void>;
+  logs: Record<StreamName, BoundedLogFile>;
+  combinedLog: CombinedLogWriter;
   flushLogs: () => Promise<void>;
   closeLogs: () => Promise<void>;
 }
@@ -283,6 +284,11 @@ export class ProcessManager {
     readiness?: { pattern: string; timeoutMs: number },
     completionSummaryFile?: string,
   ): ProcessInfo {
+    if (/^proc_\d+$/i.test(name.trim())) {
+      throw new Error(
+        `Names matching proc_<digits> are reserved for process IDs; choose a different name`,
+      );
+    }
     const live = [...this.processes.values()].filter((process) =>
       LIVE_STATUSES.has(process.status),
     );
@@ -422,6 +428,8 @@ export class ProcessManager {
       logError: false,
       closeWaiters: new Set(),
       endWaiters: new Set(),
+      logs: { stdout: stdoutLog, stderr: stderrLog },
+      combinedLog,
       flushLogs: flushLogWriters,
       closeLogs: closeLogWriters,
     };
@@ -678,8 +686,10 @@ export class ProcessManager {
       return null;
     }
     if (managed.logError) return null;
-    const stdout = this.readTailLines(managed.stdoutFile, tailLines);
-    const stderr = this.readTailLines(managed.stderrFile, tailLines);
+    const [stdout, stderr] = await Promise.all([
+      managed.logs.stdout.readTailLines(tailLines, LOG_READ_MAX_BYTES),
+      managed.logs.stderr.readTailLines(tailLines, LOG_READ_MAX_BYTES),
+    ]).catch(() => [null, null]);
     if (!stdout || !stderr) {
       managed.logError = true;
       return null;
@@ -713,8 +723,10 @@ export class ProcessManager {
     if (managed.logError) return null;
 
     const firstRead = managed.agentReadAt === null;
-    const stdout = this.readAgentLines(managed, "stdout");
-    const stderr = this.readAgentLines(managed, "stderr");
+    const [stdout, stderr] = await Promise.all([
+      this.readAgentLines(managed, "stdout"),
+      this.readAgentLines(managed, "stderr"),
+    ]).catch(() => [null, null]);
     if (!stdout || !stderr) {
       managed.logError = true;
       return null;
@@ -744,13 +756,12 @@ export class ProcessManager {
    * first if it fell behind. Returns no lines when the file has not grown, so an
    * unchanged process reads as unchanged even while a line is still incomplete.
    */
-  private readAgentLines(
+  private async readAgentLines(
     managed: ManagedProcess,
     stream: StreamName,
-  ): { lines: string[]; skipped: boolean } | null {
+  ): Promise<{ lines: string[]; skipped: boolean } | null> {
     const cursor = managed.agentCursors[stream];
-    const result = readLogLinesFrom(
-      streamFile(managed, stream),
+    const result = await managed.logs[stream].readLinesFrom(
       cursor.offset,
       LOG_READ_MAX_BYTES,
       { preferNewest: true },
@@ -767,19 +778,19 @@ export class ProcessManager {
    * Read the next bounded step of a stream without skipping anything, so a
    * caller can catch up on a backlog by looping until nothing more is consumed.
    */
-  private readScanLines(
+  private async readScanLines(
     managed: ManagedProcess,
     stream: StreamName,
-    cursor: { offset: number },
-  ): { lines: string[]; advanced: boolean } | null {
-    const result = readLogLinesFrom(
-      streamFile(managed, stream),
+    cursor: { offset: number; skipped: boolean },
+  ): Promise<{ lines: string[]; advanced: boolean } | null> {
+    const result = await managed.logs[stream].readLinesFrom(
       cursor.offset,
       LOG_READ_MAX_BYTES,
     );
     if (!result) return null;
 
     const advanced = result.nextOffset !== cursor.offset;
+    cursor.skipped ||= result.skipped;
     cursor.offset = result.nextOffset;
     return { lines: result.lines, advanced };
   }
@@ -857,11 +868,15 @@ export class ProcessManager {
 
       const pattern = opts.pattern ?? "";
       const scanned: ScanCursors = {
-        stdout: { offset: 0 },
-        stderr: { offset: 0 },
+        stdout: { offset: 0, skipped: false },
+        stderr: { offset: 0, skipped: false },
       };
+      const coverage = () => ({
+        outputGap: scanned.stdout.skipped || scanned.stderr.skipped,
+      });
       for (;;) {
         if (abortSignal.aborted) return { reason: "cancelled", info: info() };
+        const wasLive = LIVE_STATUSES.has(managed.status);
         const match = await this.scanForPattern(managed, scanned, pattern);
         if (abortSignal.aborted) return { reason: "cancelled", info: info() };
         if (match === null) return null;
@@ -875,14 +890,19 @@ export class ProcessManager {
             line: match.line,
             stream: match.stream,
             recentOutput: output,
+            ...coverage(),
             ...completion(),
           };
         }
         if (!LIVE_STATUSES.has(managed.status)) {
+          // A stream may finish while another stream's queued read is pending.
+          // Scan once more with closed writers before declaring no match.
+          if (wasLive) continue;
           return {
             reason: "exited",
             info: info(),
             recentOutput: await recentOutput(),
+            ...coverage(),
             ...completion(),
           };
         }
@@ -896,6 +916,7 @@ export class ProcessManager {
             reason: "timeout",
             info: info(),
             recentOutput: await recentOutput(),
+            ...coverage(),
           };
         }
 
@@ -945,7 +966,11 @@ export class ProcessManager {
     const needle = pattern.toLowerCase();
     for (const stream of ["stdout", "stderr"] as const) {
       for (;;) {
-        const result = this.readScanLines(managed, stream, scanned[stream]);
+        const result = await this.readScanLines(
+          managed,
+          stream,
+          scanned[stream],
+        ).catch(() => null);
         if (!result) {
           managed.logError = true;
           return null;
@@ -973,16 +998,7 @@ export class ProcessManager {
       managed.logError = true;
       return null;
     }
-    return rawLines.map((line) => {
-      if (line.startsWith("2:")) {
-        return { type: "stderr", text: line.slice(2) };
-      }
-      // Default to stdout (handles "1:" prefix and any malformed lines).
-      return {
-        type: "stdout",
-        text: line.startsWith("1:") ? line.slice(2) : line,
-      };
-    });
+    return decodeCombinedLines(rawLines);
   }
 
   private async readCombinedOutputAfterFlush(
@@ -995,7 +1011,12 @@ export class ProcessManager {
       managed.logError = true;
       return null;
     }
-    return this.readCombinedOutput(managed, tailLines);
+    if (managed.logError) return null;
+    const lines = await managed.combinedLog
+      .readTailLines(tailLines, LOG_READ_MAX_BYTES)
+      .catch(() => null);
+    if (!lines) managed.logError = true;
+    return lines && decodeCombinedLines(lines);
   }
 
   async getCombinedOutput(
@@ -1357,6 +1378,10 @@ export class ProcessManager {
   }
 }
 
-function streamFile(managed: ManagedProcess, stream: StreamName): string {
-  return stream === "stdout" ? managed.stdoutFile : managed.stderrFile;
+function decodeCombinedLines(lines: string[]): ProcessOutputLine[] {
+  return lines.map((line) =>
+    line.startsWith("2:")
+      ? { type: "stderr", text: line.slice(2) }
+      : { type: "stdout", text: line.startsWith("1:") ? line.slice(2) : line },
+  );
 }

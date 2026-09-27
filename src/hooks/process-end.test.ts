@@ -103,6 +103,7 @@ async function expectWaitReport(
 ) {
   const result = await executeWait({ id: info.id }, {
     resolve: () => ({ ok: true, info }),
+    getLogFiles: () => null,
     waitFor: async () => ({
       reason: "exited",
       info,
@@ -112,9 +113,11 @@ async function expectWaitReport(
     }),
   } as never);
   const content = result.content[0];
-  expect(content?.type === "text" ? content.text : "").toBe(
-    notification.split("\n\nThis is the automatic")[0],
-  );
+  expect(
+    content?.type === "text"
+      ? content.text.split("\n\n[Wait result truncated")[0]
+      : "",
+  ).toBe(notification.split("\n\nThis is the automatic")[0]);
   expect(result.details.success).toBe(true);
 }
 

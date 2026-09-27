@@ -22,6 +22,7 @@ vi.mock("./utils", () => ({
 
 import type { ManagerEvent, ProcessInfo } from "./constants";
 import { ProcessManager } from "./manager";
+import { BoundedLogFile } from "./utils/log-files";
 
 class FakeReadable extends EventEmitter {
   pause = vi.fn();
@@ -746,6 +747,106 @@ describe("ProcessManager", () => {
     });
   });
 
+  it.each([
+    "proc_1",
+    "proc_2",
+    "proc_999999",
+    "PROC_1",
+    " PrOc_002 ",
+  ])("reserves ID-shaped names before allocating logs or spawning: %s", (name) => {
+    const database = manager.start("database", "sleep 30", process.cwd());
+    const before = readdirSync(dirname(database.stdoutFile));
+    expect(() => manager.start(name, "sleep 30", process.cwd())).toThrow(
+      /reserved.*choose a different name/i,
+    );
+    expect(mocks.spawnCommand).toHaveBeenCalledTimes(1);
+    expect(readdirSync(dirname(database.stdoutFile))).toEqual(before);
+    expect(manager.resolve(database.id)).toMatchObject({
+      ok: true,
+      info: database,
+    });
+    const next = manager.start("ordinary", "sleep 30", process.cwd());
+    expect(next.id).toBe("proc_2");
+  });
+
+  it.each([
+    17, 24, 31, 65,
+  ])("reads retained new output after %s 64 KiB appends across rotations", async (count) => {
+    const proc = manager.start("logs", "fake", process.cwd());
+    const chunk = Buffer.from(`${"x".repeat(63)}\n`.repeat(1024));
+    for (let i = 0; i < 64; i++) children[0].stdout.emit("data", chunk);
+    await manager.readAgentOutput(proc.id, 100);
+    for (let i = 0; i < count - 1; i++) children[0].stdout.emit("data", chunk);
+    const marked = Buffer.from(chunk);
+    marked.write("retained stdout marker\n", marked.length - 64);
+    children[0].stdout.emit("data", marked);
+    children[0].stderr.emit("data", Buffer.from("independent stderr\n"));
+    const result = await manager.readAgentOutput(proc.id, 100);
+    expect(result?.stdout).toContain("retained stdout marker");
+    expect(result?.stderr).toEqual(["independent stderr"]);
+    expect(result?.hasNewOutput).toBe(true);
+    expect(await manager.readAgentOutput(proc.id, 100)).toMatchObject({
+      stdout: [],
+      stderr: [],
+    });
+  });
+
+  it.each([
+    ["stdout", 17],
+    ["stderr", 17],
+    ["stdout", 97],
+    ["stderr", 97],
+  ] as const)("output waits find retained markers after independent %s rotations (%s chunks)", async (stream, count) => {
+    const proc = manager.start("logs", "fake", process.cwd());
+    const chunk = Buffer.from(`${"x".repeat(63)}\n`.repeat(1024));
+    for (let i = 0; i < 64; i++) children[0][stream].emit("data", chunk);
+    await manager.getOutput(proc.id, 1);
+    const pending = manager.waitFor(proc.id, {
+      until: "output",
+      pattern: "READY",
+      timeoutMs: 1000,
+    });
+    await vi.advanceTimersByTimeAsync(200);
+    for (let i = 0; i < count - 1; i++) children[0][stream].emit("data", chunk);
+    const marked = Buffer.from(chunk);
+    marked.write("READY\n", marked.length - 64);
+    children[0][stream].emit("data", marked);
+    await manager.getOutput(proc.id, 1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await pending).toMatchObject({
+      reason: "matched",
+      line: "READY",
+      stream,
+      outputGap: count > 64,
+    });
+  });
+
+  it("reports incomplete wait coverage when unread output rotated away", async () => {
+    const proc = manager.start("logs", "fake", process.cwd());
+    const chunk = Buffer.from(`${"x".repeat(63)}\n`.repeat(1024));
+    children[0].stderr.emit("data", Buffer.from("LOST\n"));
+    for (let i = 0; i < 100; i++) children[0].stderr.emit("data", chunk);
+    await manager.getOutput(proc.id, 1);
+    expect(
+      await manager.waitFor(proc.id, {
+        until: "output",
+        pattern: "LOST",
+        timeoutMs: 0,
+      }),
+    ).toMatchObject({ reason: "timeout", outputGap: true });
+    const output = await manager.readAgentOutput(proc.id, 100);
+    expect(output?.droppedEarlier).toBe(true);
+  });
+
+  it("rejects an ID-shaped first name without allocating a log directory", () => {
+    expect(() => manager.start(" PROC_0 ", "fake", process.cwd())).toThrow(
+      /reserved/,
+    );
+    expect(mocks.spawnCommand).not.toHaveBeenCalled();
+    expect((manager as unknown as { logDir: string | null }).logDir).toBeNull();
+    expect(manager.start("proc_test", "fake", process.cwd()).id).toBe("proc_1");
+  });
+
   it("refuses a second live process with the same name", () => {
     manager.start("server", "pnpm dev", process.cwd());
 
@@ -1327,6 +1428,35 @@ describe("ProcessManager", () => {
       stream: "stderr",
       line: "compiled with warnings",
     });
+  });
+
+  it("rescans a stream that finishes while another queued read is pending", async () => {
+    const proc = manager.start("last-line", "fake", process.cwd());
+    const original = BoundedLogFile.prototype.readLinesFrom;
+    const read = vi
+      .spyOn(BoundedLogFile.prototype, "readLinesFrom")
+      .mockImplementationOnce(async function (this: BoundedLogFile, ...args) {
+        const result = await original.apply(this, args);
+        children[0].stdout.emit("data", Buffer.from("LAST READY\n"));
+        children[0].emit("close", 0, null);
+        await manager.getOutput(proc.id);
+        return result;
+      });
+    try {
+      expect(
+        await manager.waitFor(proc.id, {
+          until: "output",
+          pattern: "LAST READY",
+          timeoutMs: 1000,
+        }),
+      ).toMatchObject({
+        reason: "matched",
+        line: "LAST READY",
+        info: { status: "exited" },
+      });
+    } finally {
+      read.mockRestore();
+    }
   });
 
   it("stops waiting for output when the process ends first", async () => {
