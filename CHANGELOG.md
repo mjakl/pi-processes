@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Detachment validation now follows supported package executor wrappers, including `pnpm exec`, `npm exec`, and `npx`, without interpreting package option values or ordinary arguments as commands. Bash still permits detached containers; managed starts reject them.
+- New process names cannot match `proc_<digits>`, ignoring case and surrounding whitespace. This prevents friendly names from resolving to another process's ID.
+- Incremental output and output waits now track logical byte positions through independent log rotations. Reads are serialized with writes, and rotation replaces files atomically. Unread discarded output is reported as a coverage gap rather than silently missed or replayed.
+- Wait results preserve the outcome header while capping model-facing content at 50 KiB, including notices. Structured previews are independently UTF-8 byte-bounded, and truncation notices reference logs only while retained.
+- Process lists now include all retained records, up to 32, so an older live process cannot be hidden behind finished records.
+
 ## 2.1.0
 
 ### Added

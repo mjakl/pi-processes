@@ -99,7 +99,7 @@ function createProcessesParams() {
       name: Type.Optional(
         Type.String({
           description:
-            "Friendly name for the process (required for start, e.g. 'backend-dev', 'test-runner')",
+            "Friendly name for the process (required for start, e.g. 'backend-dev'). Trimmed proc_<digits> names are reserved, ignoring case.",
           minLength: 1,
           maxLength: 120,
         }),
@@ -311,11 +311,13 @@ For a server or watcher, readyPattern on start arms a one-shot, non-blocking rea
 Completion reports from wait and notifications use the same summary or recent output; a failed command remains a failed command even when wait succeeds.
 
 Actions:
-- start: name + command, with optional readyPattern, readyTimeoutSeconds, and completionSummaryFile. The command must stay in the foreground; never use &,
+- start: name + command, with optional readyPattern, readyTimeoutSeconds, and completionSummaryFile. Names matching proc_<digits> are reserved, ignoring case and surrounding whitespace. The command must stay in the foreground, including through package executors; never use &,
   nohup, setsid, or daemon/detach flags.
 - wait: block until exit, matching output, or timeout. A timeout leaves the process running. A delivered output wait replaces the readiness notification only for the same case-insensitive marker.
 - output: read output not seen before. It is for inspection, not polling.
-- logs: get full log paths. list: inspect records. kill: stop work. clear: drop finished records.
+- logs: get retained log paths. list: show all retained records (at most 32), newest first. kill: stop work. clear: drop finished records.
+
+Wait content is capped at 50 KiB including notices, with separately bounded detail previews. Logs retain at most 5 MiB per file; rotation discards older output. Output and waits report gaps when unread bytes were discarded, so a missed pattern may have appeared in discarded output.
 
 Processes stop when the session ends.`,
     promptSnippet:
