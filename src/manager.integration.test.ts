@@ -360,4 +360,29 @@ describe("ProcessManager (real processes)", () => {
       manager.cleanup();
     }
   }, 20000);
+
+  it("ends a command whose leftover descendants hold its group, and stops them", async () => {
+    const manager = new ProcessManager({ leftoverGraceMs: 300 });
+    try {
+      const proc = manager.start(
+        "leaves-a-child",
+        "sleep 30 & echo started; exit 3",
+        process.cwd(),
+      );
+      const exited = await manager.waitFor(proc.id, {
+        until: "exit",
+        timeoutMs: 8000,
+      });
+      expect(exited).toMatchObject({
+        reason: "exited",
+        info: { exitCode: 3, success: false },
+      });
+      const out = await manager.readAgentOutput(proc.id, 100);
+      expect(out?.stderr.join("\n")).toMatch(
+        /still held its process group.*sleep 30/s,
+      );
+    } finally {
+      manager.cleanup();
+    }
+  }, 20000);
 });

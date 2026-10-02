@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -91,6 +92,8 @@ interface ManagedProcess extends ProcessInfo {
 
 interface ProcessManagerOptions {
   getConfiguredShellPath?: () => string | undefined;
+  /** How long descendants may outlive the command in its process group before they are stopped. */
+  leftoverGraceMs?: number;
 }
 
 const MAX_LIVE_PROCESSES = 16;
@@ -118,9 +121,12 @@ export class ProcessManager {
   private killOperations = new Map<string, Promise<KillResult>>();
   private getConfiguredShellPath: () => string | undefined;
 
+  private leftoverGraceMs: number;
+
   constructor(options?: ProcessManagerOptions) {
     this.getConfiguredShellPath =
       options?.getConfiguredShellPath ?? (() => undefined);
+    this.leftoverGraceMs = options?.leftoverGraceMs ?? 10_000;
   }
 
   private ensureLogDir(): string {
@@ -482,11 +488,36 @@ export class ProcessManager {
       ]).then(recordLogFailures);
     });
 
+    // Descendants the command left behind (daemons it spawned without detaching)
+    // keep its group alive and its output pipes open, so the process would never
+    // end. After a grace period, name and stop them; the command's own exit code stands.
+    const stopLeftovers = () => {
+      if (!LIVE_STATUSES.has(managed.status) || managed.lastSignalSent) return;
+      if (!this.isManagedGroupAlive(managed)) return;
+      const members = groupMembers(managed.pid);
+      const note = `[pi-processes] the command exited, but these processes still held its process group and were stopped:\n${members.join("\n")}\n`;
+      const buffer = Buffer.from(note);
+      void Promise.allSettled([
+        stderrLog.append(buffer),
+        combinedLog.write("stderr", buffer),
+      ]).then(recordLogFailures);
+      try {
+        killProcessGroup(managed.pid, "SIGTERM");
+      } catch {}
+      setTimeout(() => {
+        if (!this.isManagedGroupAlive(managed)) return;
+        try {
+          killProcessGroup(managed.pid, "SIGKILL");
+        } catch {}
+      }, 2000).unref();
+    };
+
     child.on("exit", (code, signal) => {
       if (!trackingStarted || managed.leaderExited) return;
       managed.leaderExited = true;
       managed.leaderExitCode = code ?? (managed.processError ? -1 : null);
       managed.leaderExitSignal = signal;
+      setTimeout(stopLeftovers, this.leftoverGraceMs).unref();
     });
 
     let closeObserved = false;
@@ -1384,4 +1415,19 @@ function decodeCombinedLines(lines: string[]): ProcessOutputLine[] {
       ? { type: "stderr", text: line.slice(2) }
       : { type: "stdout", text: line.startsWith("1:") ? line.slice(2) : line },
   );
+}
+
+/** "pid command" for each live process in a process group. */
+function groupMembers(pgid: number): string[] {
+  try {
+    return execFileSync("ps", ["-A", "-o", "pid=,pgid=,command="], {
+      encoding: "utf8",
+    })
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/))
+      .filter((cols) => Number(cols[1]) === pgid)
+      .map((cols) => `${cols[0]} ${cols.slice(2).join(" ")}`);
+  } catch {
+    return [];
+  }
 }
