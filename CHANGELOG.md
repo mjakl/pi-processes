@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 2.5.0
+
+### Changed
+
+- `process wait` is available in every mode, including TUI and RPC, for work whose results are required before the run ends. Automatic readiness and completion notifications remain the default for long-lived sessions.
+- Completion summary files are supported in every mode. Completed waits and automatic notifications use the same report, preserving the command outcome and falling back to recent output when a summary is unavailable or invalid.
+- Active waits suppress automatic completion notifications. An output wait replaces a readiness notification only when it delivers the same case-insensitive marker.
 
 ### Fixed
 
