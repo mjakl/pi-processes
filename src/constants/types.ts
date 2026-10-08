@@ -33,6 +33,10 @@ export interface ProcessInfo {
   success: boolean | null; // null if running, true if exit code 0, false otherwise
   stdoutFile: string;
   stderrFile: string;
+  /** Why the latest log read failed; absent once a read succeeds. */
+  logReadError?: string;
+  /** The first failed log write: output after it may be missing. */
+  logWriteError?: string;
 }
 
 export type ManagerEvent =

@@ -151,7 +151,9 @@ describe("log file helpers", () => {
 
     expect(readTailLines(filePath, 2, 64)).toEqual(["second🔥", "third"]);
     expect(readTailLines(filePath, 0, 64)).toEqual([]);
-    expect(readTailLines(join(dir, "missing.log"), 2, 64)).toBeNull();
+    expect(() => readTailLines(join(dir, "missing.log"), 2, 64)).toThrow(
+      /ENOENT/,
+    );
 
     writeFileSync(filePath, "x".repeat(256));
     expect(readTailLines(filePath, 1, 32)?.[0]).toMatch(/^\[…\] /);
@@ -351,7 +353,9 @@ describe("log file helpers", () => {
     });
 
     it("reports unreadable files instead of empty output", () => {
-      expect(readLinesFrom(join(dir, "missing.log"), 0, 1024)).toBeNull();
+      expect(() => readLinesFrom(join(dir, "missing.log"), 0, 1024)).toThrow(
+        /ENOENT/,
+      );
     });
   });
 });

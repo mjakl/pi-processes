@@ -41,27 +41,46 @@ export async function buildCompletionReport(
     }
     lines.push("", "Completion summary unavailable; showing recent output.");
   }
-  lines.push(...formatRecentOutput(recentOutput));
+  lines.push(...formatRecentOutput(recentOutput, info));
   return lines.join("\n");
 }
 
 export function formatRecentOutput(
   recentOutput: ProcessOutputLine[] | null,
+  info?: Pick<ProcessInfo, "logReadError" | "logWriteError">,
 ): string[] {
-  if (recentOutput === null) {
-    return [
-      "",
-      "Recent output unavailable because process logs could not be read.",
-    ];
-  }
-  if (recentOutput.length === 0) return [];
-  return [
-    "",
-    "Recent output:",
-    ...recentOutput.map(
-      (line) => `${line.type}: ${truncateCmd(sanitizeLine(line.text), 500)}`,
-    ),
-  ];
+  const lines =
+    recentOutput === null
+      ? ["", unreadableLogsMessage(info)]
+      : recentOutput.length === 0
+        ? []
+        : [
+            "",
+            "Recent output:",
+            ...recentOutput.map(
+              (line) =>
+                `${line.type}: ${truncateCmd(sanitizeLine(line.text), 500)}`,
+            ),
+          ];
+  const incomplete = incompleteLogsMessage(info);
+  return incomplete ? [...lines, "", incomplete] : lines;
+}
+
+export function unreadableLogsMessage(
+  info?: Pick<ProcessInfo, "logReadError">,
+): string {
+  const reason = info?.logReadError
+    ? `: ${truncateCmd(sanitizeLine(info.logReadError), 300)}`
+    : "";
+  return `Recent output unavailable because process logs could not be read${reason}.`;
+}
+
+export function incompleteLogsMessage(
+  info?: Pick<ProcessInfo, "logWriteError">,
+): string | undefined {
+  return info?.logWriteError
+    ? `Logs may be missing output: a write failed (${truncateCmd(sanitizeLine(info.logWriteError), 300)}).`
+    : undefined;
 }
 
 async function readCompletionSummary(

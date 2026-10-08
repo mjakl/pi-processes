@@ -1,5 +1,11 @@
 import { EventEmitter } from "node:events";
-import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -566,6 +572,29 @@ describe("ProcessManager", () => {
     rmSync(proc.stdoutFile);
 
     expect(await manager.getOutput(proc.id)).toBeNull();
+    expect(manager.get(proc.id)?.logReadError).toMatch(/ENOENT/);
+
+    writeFileSync(proc.stdoutFile, "back\n");
+    expect((await manager.getOutput(proc.id))?.stdout).toEqual(["back"]);
+    expect(manager.get(proc.id)?.logReadError).toBeUndefined();
+  });
+
+  it("keeps logs readable after a failed write and reports the write", async () => {
+    const proc = manager.start("server", "pnpm dev", process.cwd());
+    children[0].stdout.emit("data", Buffer.from("before\n"));
+    children[0].stdout.emit("end");
+    children[0].stderr.emit("end");
+    children[0].emit("close", 0, null);
+    await manager.getOutput(proc.id);
+
+    // Output arriving after the logs closed cannot be written.
+    children[0].stdout.emit("data", Buffer.from("after\n"));
+
+    expect((await manager.getOutput(proc.id))?.stdout).toEqual(["before"]);
+    expect(await manager.getCombinedOutput(proc.id)).toEqual([
+      { type: "stdout", text: "before" },
+    ]);
+    expect(manager.get(proc.id)?.logWriteError).toMatch(/closed/);
   });
 
   it("preserves combined lines and UTF-8 across stream chunks", async () => {

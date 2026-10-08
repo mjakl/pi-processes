@@ -76,10 +76,9 @@ export class BoundedLogFile {
 
   /** Serialize reads with writes so file contents and logical positions agree. */
   private read<T>(reader: () => T): Promise<T> {
-    const operation = this.queue.then(() => {
-      if (this.failure) throw this.failure;
-      return reader();
-    });
+    // A failed write does not block reads: the file still holds what was
+    // written before it.
+    const operation = this.queue.then(reader);
     this.queue = operation.then(
       () => undefined,
       () => undefined,
@@ -91,7 +90,7 @@ export class BoundedLogFile {
     offset: number,
     maxBytes: number,
     options: { preferNewest?: boolean } = {},
-  ): Promise<LogReadResult | null> {
+  ): Promise<LogReadResult> {
     return this.read(() => {
       const retainedStart = this.baseOffset + this.markerBytes;
       const result = readLinesFrom(
@@ -100,21 +99,16 @@ export class BoundedLogFile {
         maxBytes,
         options,
       );
-      return (
-        result && {
-          ...result,
-          nextOffset: result.nextOffset + this.baseOffset,
-          endOffset: result.endOffset + this.baseOffset,
-          skipped: result.skipped || offset < retainedStart,
-        }
-      );
+      return {
+        ...result,
+        nextOffset: result.nextOffset + this.baseOffset,
+        endOffset: result.endOffset + this.baseOffset,
+        skipped: result.skipped || offset < retainedStart,
+      };
     });
   }
 
-  readTailLines(
-    lineLimit: number,
-    byteLimit: number,
-  ): Promise<string[] | null> {
+  readTailLines(lineLimit: number, byteLimit: number): Promise<string[]> {
     return this.read(() => readTailLines(this.filePath, lineLimit, byteLimit));
   }
 
@@ -261,10 +255,7 @@ export class CombinedLogWriter {
     return this.output.flush();
   }
 
-  readTailLines(
-    lineLimit: number,
-    byteLimit: number,
-  ): Promise<string[] | null> {
+  readTailLines(lineLimit: number, byteLimit: number): Promise<string[]> {
     return this.output.readTailLines(lineLimit, byteLimit);
   }
 
@@ -325,7 +316,7 @@ export function readLinesFrom(
   offset: number,
   maxBytes: number,
   options: { preferNewest?: boolean } = {},
-): LogReadResult | null {
+): LogReadResult {
   let fd: number | null = null;
   try {
     fd = openSync(filePath, "r");
@@ -386,8 +377,6 @@ export function readLinesFrom(
     }
 
     return { lines, nextOffset, endOffset: size, skipped };
-  } catch {
-    return null;
   } finally {
     if (fd !== null) closeSync(fd);
   }
@@ -397,7 +386,7 @@ export function readTailLines(
   filePath: string,
   lineLimit: number,
   byteLimit: number,
-): string[] | null {
+): string[] {
   const maxLines = Math.max(0, Math.floor(lineLimit));
   const maxBytes = Math.max(0, Math.floor(byteLimit));
   if (maxLines === 0 || maxBytes === 0) return [];
@@ -448,8 +437,6 @@ export function readTailLines(
       lines[0] = `[…] ${lines[0]}`;
     }
     return lines.slice(-maxLines);
-  } catch {
-    return null;
   } finally {
     if (fd !== null) closeSync(fd);
   }

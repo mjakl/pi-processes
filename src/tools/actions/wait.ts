@@ -6,7 +6,11 @@ import {
 } from "../../constants";
 import type { ProcessManager } from "../../manager";
 import { formatStatus, sanitizeLine, truncateUtf8Bytes } from "../../utils";
-import { buildCompletionReport } from "../../utils/completion-report";
+import {
+  buildCompletionReport,
+  incompleteLogsMessage,
+  unreadableLogsMessage,
+} from "../../utils/completion-report";
 import {
   formatAmbiguousProcessMessage,
   formatUnknownProcessMessage,
@@ -116,11 +120,16 @@ export async function executeWait(
   // or the output-wait condition. Summary file reading remains shared.
   const body = report
     ? report.slice(report.indexOf("\n") + 1)
-    : recent === null
-      ? "Recent output unavailable because process logs could not be read."
-      : recent.length > 0
-        ? `Recent output:\n${recent.map((line) => `${line.type}: ${line.text}`).join("\n")}`
-        : "";
+    : [
+        recent === null
+          ? unreadableLogsMessage(outcome.info)
+          : recent.length > 0
+            ? `Recent output:\n${recent.map((line) => `${line.type}: ${line.text}`).join("\n")}`
+            : "",
+        incompleteLogsMessage(outcome.info) ?? "",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
   const content = report
     ? [summary, gap, body].filter(Boolean).join("\n")
     : [summary, gap, body].filter(Boolean).join("\n\n");

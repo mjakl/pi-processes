@@ -31,6 +31,7 @@ function setupHarness() {
     getCombinedOutput: vi.fn(async () => [
       { type: "stdout" as const, text: "Listening on :3000" },
     ]),
+    get: vi.fn(() => null),
   } as unknown as ProcessManager;
   const pi = { sendMessage: vi.fn() } as unknown as ExtensionAPI;
 

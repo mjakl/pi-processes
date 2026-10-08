@@ -10,6 +10,7 @@ import {
   truncateCmd,
   truncateUtf8Bytes,
 } from "../utils";
+import { formatRecentOutput } from "../utils/completion-report";
 
 export interface ProcessReadinessDetails {
   processId: string;
@@ -64,19 +65,7 @@ async function notifyReadiness(
 
   lines.push(`Command: ${truncateCmd(sanitizeLine(info.command), 160)}`);
   const recentOutput = await manager.getCombinedOutput(info.id, 20);
-  if (recentOutput === null) {
-    lines.push(
-      "",
-      "Recent output unavailable because process logs could not be read.",
-    );
-  } else if (recentOutput.length > 0) {
-    lines.push("", "Recent output:");
-    for (const output of recentOutput) {
-      lines.push(
-        `${output.type}: ${truncateCmd(sanitizeLine(output.text), 500)}`,
-      );
-    }
-  }
+  lines.push(...formatRecentOutput(recentOutput, manager.get(info.id) ?? info));
 
   lines.push(
     "",
