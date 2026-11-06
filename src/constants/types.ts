@@ -33,6 +33,8 @@ export interface ProcessInfo {
   success: boolean | null; // null if running, true if exit code 0, false otherwise
   stdoutFile: string;
   stderrFile: string;
+  /** "pid command" for processes the command left running in its process group when it ended. */
+  leftovers?: string[];
 }
 
 export type ManagerEvent =

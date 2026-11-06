@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -91,6 +92,8 @@ interface ManagedProcess extends ProcessInfo {
 
 interface ProcessManagerOptions {
   getConfiguredShellPath?: () => string | undefined;
+  /** How long descendants may outlive the command in its process group before it ends without them. */
+  leftoverGraceMs?: number;
 }
 
 const MAX_LIVE_PROCESSES = 16;
@@ -118,9 +121,12 @@ export class ProcessManager {
   private killOperations = new Map<string, Promise<KillResult>>();
   private getConfiguredShellPath: () => string | undefined;
 
+  private leftoverGraceMs: number;
+
   constructor(options?: ProcessManagerOptions) {
     this.getConfiguredShellPath =
       options?.getConfiguredShellPath ?? (() => undefined);
+    this.leftoverGraceMs = options?.leftoverGraceMs ?? 10_000;
   }
 
   private ensureLogDir(): string {
@@ -245,7 +251,7 @@ export class ProcessManager {
 
   private finalizeIfGroupEnded(managed: ManagedProcess): void {
     if (!managed.leaderClosed || !LIVE_STATUSES.has(managed.status)) return;
-    if (this.isManagedGroupAlive(managed)) {
+    if (!managed.leftovers && this.isManagedGroupAlive(managed)) {
       this.ensureWatcherRunning();
       return;
     }
@@ -482,16 +488,51 @@ export class ProcessManager {
       ]).then(recordLogFailures);
     });
 
+    // Descendants the command left behind (daemons it spawned without detaching)
+    // keep its group alive, and may hold its output pipes open, so the process
+    // would never end. After a grace period it ends without them, like a shell
+    // returning from a command that started a daemon: they keep running and are
+    // named in the result. Their output is drained, not logged; closing the
+    // pipes instead would hand them SIGPIPE.
+    const releaseLeftovers = () => {
+      if (!LIVE_STATUSES.has(managed.status) || managed.lastSignalSent) return;
+      if (!this.isManagedGroupAlive(managed)) return;
+      managed.leftovers = groupMembers(managed.pid);
+      for (const stream of [child.stdout, child.stderr]) {
+        if (!stream || stream.readableEnded || stream.destroyed) continue;
+        stream.removeAllListeners("data");
+        stream.removeAllListeners("end");
+        stream.resume();
+        (stream as { unref?: () => void }).unref?.();
+      }
+      if (managed.leaderClosed) {
+        this.finalizeIfGroupEnded(managed);
+        return;
+      }
+      void managed
+        .closeLogs()
+        .catch(() => {
+          managed.logError = true;
+        })
+        .then(() => {
+          managed.leaderClosed = true;
+          for (const waiter of managed.closeWaiters) waiter();
+          managed.closeWaiters.clear();
+          this.finalizeIfGroupEnded(managed);
+        });
+    };
+
     child.on("exit", (code, signal) => {
       if (!trackingStarted || managed.leaderExited) return;
       managed.leaderExited = true;
       managed.leaderExitCode = code ?? (managed.processError ? -1 : null);
       managed.leaderExitSignal = signal;
+      setTimeout(releaseLeftovers, this.leftoverGraceMs).unref();
     });
 
     let closeObserved = false;
     child.on("close", (code, signal) => {
-      if (!trackingStarted || closeObserved) return;
+      if (!trackingStarted || closeObserved || managed.leftovers) return;
       closeObserved = true;
 
       managed.leaderExited = true;
@@ -1097,6 +1138,27 @@ export class ProcessManager {
     });
   }
 
+  /**
+   * Signal what a finished command left running in its group (named in its
+   * result), and only members still in that group, so a reused pid is never
+   * signalled. Returns the members signalled.
+   */
+  killLeftovers(id: string, signal: NodeJS.Signals = "SIGTERM"): string[] {
+    const managed = this.processes.get(id);
+    if (!managed?.leftovers?.length || LIVE_STATUSES.has(managed.status))
+      return [];
+    const named = new Set(managed.leftovers.map((m) => m.split(" ")[0]));
+    const still = groupMembers(managed.pid).filter((m) =>
+      named.has(m.split(" ")[0]),
+    );
+    for (const member of still) {
+      try {
+        process.kill(Number(member.split(" ")[0]), signal);
+      } catch {}
+    }
+    return still;
+  }
+
   async kill(
     id: string,
     opts?: {
@@ -1374,6 +1436,7 @@ export class ProcessManager {
       success: managed.success,
       stdoutFile: managed.stdoutFile,
       stderrFile: managed.stderrFile,
+      ...(managed.leftovers ? { leftovers: managed.leftovers } : {}),
     };
   }
 }
@@ -1384,4 +1447,19 @@ function decodeCombinedLines(lines: string[]): ProcessOutputLine[] {
       ? { type: "stderr", text: line.slice(2) }
       : { type: "stdout", text: line.startsWith("1:") ? line.slice(2) : line },
   );
+}
+
+/** "pid command" for each live process in a process group. */
+function groupMembers(pgid: number): string[] {
+  try {
+    return execFileSync("ps", ["-A", "-o", "pid=,pgid=,command="], {
+      encoding: "utf8",
+    })
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/))
+      .filter((cols) => Number(cols[1]) === pgid)
+      .map((cols) => `${cols[0]} ${cols.slice(2).join(" ")}`);
+  } catch {
+    return [];
+  }
 }

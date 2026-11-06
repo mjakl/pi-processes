@@ -63,7 +63,13 @@ export async function executeKill(
 
   const proc = resolved.info;
   if (!LIVE_STATUSES.has(proc.status)) {
-    const message = `Process "${sanitizeLine(proc.name)}" (${proc.id}) already ${proc.status}`;
+    const signal = params.force ? "SIGKILL" : "SIGTERM";
+    const stopped = manager.killLeftovers(proc.id, signal);
+    const message =
+      `Process "${sanitizeLine(proc.name)}" (${proc.id}) already ${proc.status}` +
+      (stopped.length
+        ? `; sent ${signal} to what it left in its group:\n${stopped.map((m) => `  ${sanitizeLine(m)}`).join("\n")}`
+        : "");
     return {
       content: [{ type: "text", text: message }],
       details: {

@@ -3,11 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
-import type { ManagerEvent } from "./constants";
+import type { ManagerEvent, ProcessInfo } from "./constants";
 import { setupProcessEndHook } from "./hooks/process-end";
 import { ProcessManager } from "./manager";
 import { executeStart } from "./tools/actions/start";
 import { executeWait } from "./tools/actions/wait";
+import { buildCompletionReport } from "./utils/completion-report";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -360,4 +361,59 @@ describe("ProcessManager (real processes)", () => {
       manager.cleanup();
     }
   }, 20000);
+
+  it.each([
+    ["holding its output pipes", "sleep 30 & echo started; exit 3"],
+    [
+      "detached from its output",
+      "sleep 30 >/dev/null 2>&1 & echo started; exit 3",
+    ],
+  ])(
+    "ends a command that leaves a daemon in its group %s, and leaves the daemon running",
+    async (_, command) => {
+      const manager = new ProcessManager({ leftoverGraceMs: 300 });
+      let daemon: number | undefined;
+      try {
+        const proc = manager.start("leaves-a-child", command, process.cwd());
+        const exited = await manager.waitFor(proc.id, {
+          until: "exit",
+          timeoutMs: 8000,
+        });
+        expect(exited).toMatchObject({
+          reason: "exited",
+          info: { exitCode: 3, success: false },
+        });
+        const info = manager.get(proc.id);
+        const leftover = info?.leftovers?.find((m) => m.endsWith("sleep 30"));
+        expect(leftover).toBeDefined();
+        daemon = Number(leftover?.split(" ")[0]);
+        expect(() => process.kill(daemon as number, 0)).not.toThrow();
+        expect(await buildCompletionReport(info as ProcessInfo, [])).toContain(
+          `left running; stop them if they are not wanted: process kill id="${proc.id}"):\n  ${leftover}`,
+        );
+        expect(await manager.readAgentOutput(proc.id, 100)).toMatchObject({
+          stdout: ["started"],
+        });
+        const stopped = manager.killLeftovers(proc.id);
+        expect(stopped).toEqual([leftover]);
+        const deadline = Date.now() + 3000;
+        while (Date.now() < deadline) {
+          try {
+            process.kill(daemon as number, 0);
+          } catch {
+            daemon = undefined;
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        expect(daemon).toBeUndefined();
+      } finally {
+        manager.cleanup();
+        if (daemon)
+          expect(() => process.kill(daemon as number, 0)).not.toThrow();
+        if (daemon) process.kill(daemon, "SIGKILL");
+      }
+    },
+    20000,
+  );
 });

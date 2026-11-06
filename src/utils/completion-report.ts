@@ -30,6 +30,12 @@ export async function buildCompletionReport(
       : summary,
     `Command: ${truncateCmd(sanitizeLine(info.command), 160)}`,
   ];
+  if (info.leftovers?.length) {
+    lines.push(
+      `Still running in its process group (left running; stop them if they are not wanted: process kill id="${info.id}"):`,
+      ...info.leftovers.map((member) => `  ${sanitizeLine(member)}`),
+    );
+  }
 
   if (completionSummaryFile) {
     const completionSummary = await readCompletionSummary(

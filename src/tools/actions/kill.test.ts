@@ -87,6 +87,7 @@ describe("executeKill", () => {
         info: { id: "proc_1", name: "server", status: "exited" },
       }),
       kill: vi.fn(),
+      killLeftovers: vi.fn().mockReturnValue([]),
     } as const;
 
     const result = await executeKill({ id: "proc_1" }, manager as never);
@@ -94,6 +95,26 @@ describe("executeKill", () => {
     expect(manager.kill).not.toHaveBeenCalled();
     expect(result.details.success).toBe(true);
     expect(result.details.message).toContain("already exited");
+  });
+
+  it("stops what a finished process left in its group", async () => {
+    const manager = {
+      resolve: vi.fn().mockReturnValue({
+        ok: true,
+        info: { id: "proc_1", name: "gate", status: "exited" },
+      }),
+      kill: vi.fn(),
+      killLeftovers: vi
+        .fn()
+        .mockReturnValue(["4242 nc -x proxy github.com 22"]),
+    } as const;
+
+    const result = await executeKill({ id: "proc_1" }, manager as never);
+
+    expect(manager.kill).not.toHaveBeenCalled();
+    expect(manager.killLeftovers).toHaveBeenCalledWith("proc_1", "SIGTERM");
+    expect(result.details.message).toContain("already exited; sent SIGTERM");
+    expect(result.details.message).toContain("4242 nc -x proxy github.com 22");
   });
 
   it("returns a clear error for ambiguous names", async () => {
