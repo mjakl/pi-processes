@@ -306,8 +306,9 @@ export function setupProcessesTools(
 Use 'start' for servers, watchers, builds, full test runs, installs, migrations, benchmarks,
 and anything else that may block. Keep bash for commands that finish in seconds.
 
-${getPromptGuidelines(options.defaultWait).slice(1).join("\n")}
-For a server or watcher, readyPattern on start arms a one-shot, non-blocking readiness notification.
+Never poll managed processes with process list, process output, or process logs.
+In long-lived TUI and RPC sessions, managed processes notify you automatically when they end. Use readyPattern on start for one-shot, non-blocking readiness notifications. Normally, if no independent work remains after start, give a short status update and end your turn; the automatic notification will resume you.
+Use process wait for explicit run-to-completion work or required completion or readiness results before this run ends, including before ending a print or JSON run. Wait is available in every mode. A wait timeout leaves the process running; wait again if the result is still required. Keep individual waits within your available execution time, including any caller inactivity limit.
 Completion reports from wait and notifications use the same summary or recent output; a failed command remains a failed command even when wait succeeds.
 
 Actions:
@@ -324,7 +325,7 @@ Processes stop when the session ends.`,
       "Run and supervise servers, watchers, builds, and tests with asynchronous notifications or explicit waiting",
     executionMode: "sequential",
 
-    promptGuidelines: getPromptGuidelines(options.defaultWait),
+    promptGuidelines: getPromptGuidelines(),
 
     parameters: ProcessesParams,
 
