@@ -80,9 +80,11 @@ describe("process tool contract", () => {
     ).toBe(true);
     expect(interactive.parameters).toEqual(noninteractive.parameters);
     expect(interactive.description).toContain("wait:");
-    expect(interactive.promptGuidelines.join("\n")).toContain("process wait");
-    expect(interactive.promptGuidelines.join("\n")).toContain("end your turn");
     expect(noninteractive.description).toContain("wait:");
+    expect(interactive.description).toEqual(noninteractive.description);
+    expect(interactive.promptGuidelines).toEqual(
+      noninteractive.promptGuidelines,
+    );
   });
 
   it.each([
